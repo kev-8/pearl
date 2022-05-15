@@ -3,27 +3,22 @@
 
 import pandas as pd
 import pandas_gbq
-from google.cloud import bigquery
 from google.oauth2 import service_account
-from time import sleep
 from newspaper import Article
 
 # import csv file to filter sources by country 
 
-country_filter = pd.read_csv('/Users/KevinLubin/Desktop/ds/pearl/gdelt_country_sources.csv')
-country_filter.head()
+country_filter = pd.read_csv('./gdelt_country_sources.csv')
 
 # define credentials object for GCP to run queries
-credentials = service_account.Credentials.from_service_account_file(
-    '/Users/KevinLubin/Desktop/ds/pearl/pearl-336700-0fa91569420d.json')
+credentials = service_account.Credentials.from_service_account_file('./pearl-336700-0fa91569420d.json')
+
 
 # Perform query
-
 query = """
-
-    SELECT GlobalEventID, SQLDATE, EventCode, EventBaseCode, EventRootCode, Quadclass, AvgTone,
+    SELECT GlobalEventID, SQLDATE, EventCode, EventBaseCode, EventRootCode, Quadclass, AvgTone, 
     GoldSteinScale, NumMentions, Sourceurl
-
+    
     FROM `gdelt-bq.full.events`
     
     WHERE (SQLDATE >= 20210101 AND SQLDATE <= 20210115) 
@@ -35,14 +30,12 @@ query = """
     
     ORDER BY SQLDATE, GlobalEventID, EventCode, EventBaseCode, EventRootCode, Quadclass, AvgTone, 
     GoldSteinScale, NumMentions, Sourceurl
-    
-"""
+    """
 
 news_df = pandas_gbq.read_gbq(query, credentials=credentials)
 
 
 # function to look for the base URL for country specific sources and return filtered df
-
 def get_articles(fips):
     
     # find all sources from chosen country
@@ -102,9 +95,9 @@ def get_article_text(df):
     
     return(output_df)
 
-final_df = get_article_text(canada_articles)
+test_df = get_article_text(canada_articles)
 
 # saving final df to use in modeling script
-final_df.to_csv('./final_df.csv')
+test_df.to_csv('./test_df.csv')
 
 
