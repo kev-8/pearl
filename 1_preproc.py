@@ -97,6 +97,8 @@ def get_article_text(df):
 
 test_df = get_article_text(canada_articles)
 
+test_df.drop(columns=['Unnamed: 0'], inplace=True)
+
 # saving final df to use in modeling script
 test_df.to_csv('./test_df.csv')
 

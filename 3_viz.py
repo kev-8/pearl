@@ -9,6 +9,7 @@ import pandas as pd
 # world map
 # country dropdown menu
 # timeframe dropdown menu
+# ner
 # sentiment analysis
-# topic modeling (using LDA?) or NER
+# topic modeling
 # global regional analysis 
