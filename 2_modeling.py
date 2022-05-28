@@ -9,7 +9,7 @@ from collections import Counter
 
 
 test_df = pd.read_csv('./test_df.csv')
-nlp = spacy.load("en_core_web_lg")
+nlp = spacy.load("en_core_web_lg") 
 
 
 
@@ -32,7 +32,7 @@ test_df['top_entity_labels'] = test_df['top_entity_labels'].astype('object')
 # creating empty lists and getting index for function
 entity_name = []
 entity_label = []
-df_index = test_df.index.values.tolist()
+df_index = [test_df.index.values for index in test_df if test_df['article_text'].item('URL not found.')]
 
 def get_entity_info(df):
     
