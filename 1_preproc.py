@@ -8,7 +8,7 @@ from newspaper import Article
 
 # import csv file to filter sources by country 
 
-country_filter = pd.read_csv('./gdelt_country_sources.csv')
+country_filter = pd.read_csv('./country_sources.csv')
 
 # define credentials object for GCP to run queries
 credentials = service_account.Credentials.from_service_account_file('./pearl-336700-0fa91569420d.json')
