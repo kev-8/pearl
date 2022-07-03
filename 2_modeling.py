@@ -1,11 +1,11 @@
 
 #load in libraries and data
-
 import pandas as pd
 import numpy as np
 import matplotlib as plt
 import spacy
 # from spacy import displacy
+from spacytextblob.spacytextblob import SpacyTextBlob
 import pyLDAvis.gensim_models
 from gensim.corpora.dictionary import Dictionary
 from gensim.models import LdaMulticore
@@ -13,7 +13,7 @@ from gensim.models import CoherenceModel
 from collections import Counter
 
 
-temp_df = pd.read_csv('./temp_df.csv')
+temp_df = pd.read_csv('./test_df.csv')
 nlp = spacy.load("en_core_web_lg") 
 
 
@@ -43,7 +43,7 @@ df_index = list(temp_df.index.values)
 def get_entity_info(df):
     
     for row in df_index:
-        doc = nlp(temp_df.article_text[row])
+        doc = nlp(df.article_text[row])
         
         if doc.text == 'URL not found.':
             
@@ -69,6 +69,7 @@ def get_entity_info(df):
     
 
 ner_df = get_entity_info(temp_df)
+
 
 
 #%% topic modeling
@@ -132,10 +133,42 @@ topic_modeling_df.topic.value_counts()
 
 
 #%% sentiment analysis
-# token_list = [token for token in doc]
-# filtered_tokens = [token for token in doc if not token.is_stop]
-# lemmatizer = nlp.get_pipe('lemmatizer')
-# lemmas = [token.lemma_ for token in doc]
-# filtered_tokens[0].vector
+nlp.add_pipe('spacytextblob')
 
+# adding additional empty columns to dataframe
+topic_modeling_df['polarity'] = np.nan
+topic_modeling_df['polarity'] = topic_modeling_df['polarity'].astype('object')
+topic_modeling_df['subjectivity'] = np.nan
+topic_modeling_df['subjectivity'] = topic_modeling_df['subjectivity'].astype('object')
 
+# creating empty lists and getting index for function
+polarity_value = []
+subjectivity_value = []
+df_index = list(topic_modeling_df.index.values)
+
+def get_sentiment(df):
+    
+    for row in df_index:
+        doc_sent = nlp(df.article_text[row])
+        
+        if doc_sent.text == 'URL not found.':
+            
+            df.at[row,'polarity'] = 'NA'
+            df.at[row,'subjectivity'] = 'NA'
+                
+        else:
+            
+            # getting sentiment and assigning to lists 
+            polarity_value = doc_sent._.blob.polarity
+            subjectivity_value = doc_sent._.blob.subjectivity
+
+            # adding to df
+            df.at[row,'polarity'] = polarity_value
+            df.at[row,'subjectivity'] = subjectivity_value
+
+    return(df)
+
+sentiment_df = get_sentiment(topic_modeling_df)
+
+# saving final df to use in visualization script
+sentiment_df.to_csv('./modeling_df.csv')
