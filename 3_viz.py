@@ -1,9 +1,8 @@
 
 # load in libraries
-from dash import Dash
-import dash_core_components as dcc
-import dash_html_components as html
-from dash.dependencies import Input, Output
+import dash
+from dash import Dash, html
+# from dash.dependencies import Input, Output
 import plotly.express as px
 import pandas as pd
 
@@ -21,10 +20,8 @@ modeling_df = pd.read_csv('./modeling_df.csv')
 # global regional analysis 
 
 
-# ADD the landing page to the app
 
-
-app = Dash(__name__)
+app = Dash(__name__, use_pages=True)
 
 colors = {
     'background': '#111111',
@@ -43,11 +40,13 @@ fig.update_layout(
 )
 
 app.layout = html.Div([
-    dcc.Graph(
-        id='life-exp-vs-gdp',
-        figure=fig
-    )
+    dash.page_container
 ])
 
 if __name__ == '__main__':
     app.run_server(debug=True)
+    
+    
+    
+    
+    
