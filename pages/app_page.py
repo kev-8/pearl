@@ -1,9 +1,14 @@
 import dash
 from dash import html
 
-dash.register_page(__name__, path='/app', title='pearl')
+dash.register_page(__name__, path='/app', title='pearl', name='app_page')
 
-colors = {'background': '#111111', 'text': '#7FDBFF'}
+# TODO: 
+    # Add clickable world map
+    # Add country down menus
+    # Add timeframe dropdown menu
+
+colors = {'text': '#7FDBFF'}
 
 layout = html.Div(children=[
     html.H1(children='placeholder',
