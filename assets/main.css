@@ -8,6 +8,45 @@ body {
 
 }
 
+
+
+/* Style all labels */
+label {
+  font-family: "Lato";
+  font-weight: bold;
+  font-size: 2em;
+  color: #d4b1aa; 
+}
+
+
+
+/* Change dropdown menu to be black */
+.Select-control {
+  background-color: rgb(25, 25, 25);
+}
+
+/*
+.Select-value {
+  background-color: rgb(25, 25, 25);
+  color: white;
+} */
+
+.Select-menu-outer {
+  background-color: rgb(25, 25, 25);
+}
+.VirtualizedSelectOption {
+    background-color: black;
+    color: white;
+    font-family: "Lato";
+}
+.VirtualizedSelectFocusedOption {
+    background-color: black;
+    color: white;
+    font-family: "Lato";
+}
+
+
+
 /* Code By Webdevtrick ( https://webdevtrick.com) */
 .shimmer {
   font-family: "Lato";
