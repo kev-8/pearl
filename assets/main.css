@@ -5,44 +5,27 @@ body {
   text-align: center;
   /* Photo by >Adrien Olichone on Unsplash 
   background-image: url('/assets/black_sand.png') */
-
 }
-
-
 
 /* Style all labels */
 label {
   font-family: "Lato";
   font-weight: bold;
-  font-size: 2em;
+  font-size: 1.5em;
   color: #d4b1aa; 
 }
 
+.div-for-dropdown {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
 /* Change dropdown menu to be black */
-.Select-control {
-  background-color: rgb(25, 25, 25);
-}
-
-/*
-.Select-value {
-  background-color: rgb(25, 25, 25);
+.Select-control, .Select-menu-outer, .Select-multi-value-wrapper, .select-up, .is-open .Select-control {
+  background-color: #000;
   color: white;
-} */
-
-.Select-menu-outer {
-  background-color: rgb(25, 25, 25);
+  font-family: "Lato";
 }
-.VirtualizedSelectOption {
-    background-color: black;
-    color: white;
-    font-family: "Lato";
-}
-.VirtualizedSelectFocusedOption {
-    background-color: black;
-    color: white;
-    font-family: "Lato";
-}
-
 
 
 /* Code By Webdevtrick ( https://webdevtrick.com) */
@@ -50,7 +33,6 @@ label {
   font-family: "Lato";
   font-weight: 300;
   font-size: 6em;
-
 }
 .shimmer {
   text-align: center;
