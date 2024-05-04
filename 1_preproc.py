@@ -1,19 +1,19 @@
 # load in libraries
-
 import pandas as pd
 import pandas_gbq
 from google.oauth2 import service_account
 from newspaper import Article
+import boto3
+import logging
+
 
 # import csv file to filter sources by country
-
 country_filter = pd.read_csv("./country_sources.csv")
 
 # define credentials object for GCP to run queries
 credentials = service_account.Credentials.from_service_account_file(
     "./pearl-336700-91f798ac4dc7.json"
 )
-
 
 # Perform query
 query = """
@@ -22,7 +22,7 @@ query = """
     
     FROM `gdelt-bq.full.events`
     
-    WHERE (SQLDATE >= 20210101 AND SQLDATE <= 20210115) 
+    WHERE (SQLDATE >= 19750101 AND SQLDATE <= 19991231) 
     
     AND (ActionGeo_CountryCode = 'HA' OR Actor1Geo_CountryCode = 'HA' OR Actor2Geo_CountryCode = 'HA')
     
@@ -37,14 +37,20 @@ news_df = pandas_gbq.read_gbq(query, credentials=credentials)
 
 
 # function to look for the base URL for country specific sources and return filtered df
-def get_articles(fips):
+def get_articles(fips: object) -> object:
 
-    # find all sources from chosen country
-    temp_sources = country_filter[country_filter.fips == fips]
+    if fips is None:
+        # find sources from all countries
+        source_list = country_filter.source.to_list()
+        pattern = "|".join(source_list)
 
-    # create a pattern to search for sources in query result
-    source_list = temp_sources.source.to_list()
-    pattern = "|".join(source_list)
+    else:
+        # find sources from chosen country
+        temp_sources = country_filter[country_filter.fips == fips]
+
+        # create a pattern to search for sources in query result
+        source_list = temp_sources.source.to_list()
+        pattern = "|".join(source_list)
 
     # create df with results from chosen country
     articles = news_df[news_df.Sourceurl.str.contains(pattern) == True]
@@ -55,7 +61,8 @@ def get_articles(fips):
     return articles
 
 
-canada_articles = get_articles("CA")
+# getting all articles from 1975-2000 (based on SQLDATE in query)
+all_articles_1975_2000 = get_articles(None)
 
 # creating dictionary to hold the urls and their respective text
 link_text = {}
@@ -63,7 +70,6 @@ link_text = {}
 
 # function to scrape the text from articles and attach them to df
 def get_article_text(df):
-
     # creates a list of URLs to use for nested function
     url_list = df["Sourceurl"].tolist()
 
@@ -97,9 +103,15 @@ def get_article_text(df):
     return output_df
 
 
-test_df = get_article_text(canada_articles)
+test_df = get_article_text(all_articles_1975_2000)
 
 # test_df.drop(columns=['Unnamed: 0'], inplace=True)
 
 # saving final df to use in modeling script
-test_df.to_csv("./test_df.csv")
+# test_df.to_csv("./test_df.csv")
+
+# use langchain text splitter to chunk articles
+
+# use cohere embedding models to embed chunks
+
+# use pinecone to store the embeddings
