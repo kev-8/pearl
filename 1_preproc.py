@@ -81,10 +81,16 @@ articles = get_article_text(news_df)
 # saving raw input data
 # articles.to_csv("./articles.csv", index=False)
 
-# use text splitter to chunk articles (using chunk_size=500 to be under Cohere embedding model token length)
-# text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50, separators=["\n\n", "\n", " ", ""])
-# documents = text_splitter.split_documents(documents=articles)
-# print(f'Split into {len(documents)} chunks')
+
+# use text splitter to chunk articles (chunk_size=500 to be under Cohere embedding model token length)
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=500,
+                                               chunk_overlap=50,
+                                               separators=["\n\n", "\n", " ", ""])
+
+texts = text_splitter.create_documents(df['article_text'])
+
+chunks = text_splitter.split_documents(documents=texts)
+print(f'Split into {len(chunks)} chunks')
 
 # convert chunks into json
 
