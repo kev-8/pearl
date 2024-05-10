@@ -3,9 +3,9 @@ import pandas as pd
 import pandas_gbq
 from google.oauth2 import service_account
 from newspaper import Article
-import boto3
-import json
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+import json
+import boto3
 
 
 # define credentials object for GCP to run queries
@@ -93,28 +93,27 @@ chunks = text_splitter.split_documents(documents=texts)
 print(f'Split into {len(chunks)} chunks')
 
 # convert chunks into json
-
+json_chunks = json.dumps([{'page_content': doc.page_content} for doc in chunks], indent=4)
 
 # create bedrock client
-# bedrock = boto3.client(service_name='bedrock-runtime')
+bedrock = boto3.client(service_name='bedrock-runtime')
 
 # define embedding model parameters
-# input_type = "search_document"
-# model_id = "cohere.embed-english-v3" # "cohere.embed-multilingual-v3"
+input_type = "search_document"
+model_id = "cohere.embed-english-v3"
 
-# # create JSON
-# json_params = {
-#     'texts': ,
-#     'input_type': ,
-# }
-# json_body = json.dumps(json_params)
-# params = {'body': json_body, 'modelId': model_id}
+# create JSON
+json_params = {
+    'texts': json_chunks,
+    'input_type': input_type,
+}
+json_body = json.dumps(json_params)
+params = {'body': json_body, 'modelId': model_id}
 
-# # invoke the model and print the response
+# invoke the model and print the response
 # result = bedrock.invoke_model(**params)
 # response = json.loads(result['body'].read().decode())
 # print(response)
-#
 
 
 
