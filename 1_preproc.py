@@ -22,7 +22,8 @@ print(f'Split into {len(chunks)} chunks')
 json_chunks = json.dumps([{'page_content': doc.page_content} for doc in chunks], indent=4)
 
 # create bedrock client
-bedrock = boto3.client(service_name='bedrock-runtime', region_name="us-east-1")
+client = boto3.client("bedrock-runtime", region_name="us-east-1")
+
 
 # define embedding model parameters
 input_type = "search_document"
@@ -38,8 +39,8 @@ params = {'body': json_body, 'modelId': model_id}
 
 
 # invoke the model and print the response
-# result = bedrock.invoke_model(**params)
-# response = json.loads(result['body'].read().decode())
-# print(response)
+result = client.invoke_model(**params)
+response = json.loads(result['body'].read().decode())
+print(response)
 
 # use pinecone to store the embeddings
