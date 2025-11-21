@@ -8,23 +8,35 @@ from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
 # load in data 
 df = pd.read_csv('/Users/kevin/Desktop/ds/other/test_df.csv')
 
+# convert column to a list of clean strings
+texts_raw = df['article_text'].fillna("").astype(str).tolist()
 
 # use text splitter to chunk articles (chunk_size=500 to be under Cohere embedding model token length)
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=500,
                                                chunk_overlap=50,
-                                               separators=["\n\n", "\n", " ", ""])
+                                               is_separator_regex=False)
 
-texts = text_splitter.create_documents(df['article_text'])
+chunks = text_splitter.create_documents(texts_raw)
 
-chunks = text_splitter.split_documents(documents=texts)
-print(f'Split into {len(chunks)} chunks')
+def doc_to_text_list(doc_list):
+    """Convert a list of Document objects to a list of strings."""
+    output = []
+    for d in doc_list:
+        if d is None:
+            continue
+        if hasattr(d, "page_content"): # Document-like?
+            output.append(str(d.page_content))
+        else:
+            output.append(str(d))
+    return output
 
-# convert chunks into json
-chunks = json.dumps([{'page_content': doc.page_content} for doc in chunks], indent=4)
+
+chunks_to_embed = doc_to_text_list(chunks)  # list[str]
 
 # define embedding model parameters
 model_id = "cohere.embed-v4:0"
@@ -43,7 +55,7 @@ def generate_text_embeddings(model_id, body, region_name):
         dict: The response from the model.
     """
 
-    logger.info("\nGenerating text embeddings with the Cohere Embed model %s", model_id)
+    logger.info("\n\nGenerating text embeddings with Cohere Embed %s", model_id)
 
     accept = '*/*'
     content_type = 'application/json'
@@ -57,49 +69,37 @@ def generate_text_embeddings(model_id, body, region_name):
         contentType=content_type
     )
 
-    logger.info("\nSuccessfully generated embeddings with Cohere model %s", model_id)
+    logger.info("\n\nSuccessfully generated embeddings with model: %s", model_id)
 
     return response
 
 
-def main(model_id, chunks, region_name, input_type):
-    """
-    Entrypoint for Cohere Embed example.
-    """
-
-    # logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+def main(model_id, chunks_to_embed, region_name, input_type):
+    """Entrypoint for Cohere Embed example."""
 
     try:
         body = json.dumps({
-            "texts": chunks,
+            "texts": chunks_to_embed,
             "input_type": input_type,
         })
         
         response = generate_text_embeddings(model_id, body, region_name)
-
         response_body = json.loads(response.get('body').read())
-
-        print(f"ID: {response_body.get('id')}")
-        print(f"Response type: {response_body.get('response_type')}")
-
-        print("Embeddings")
         embeddings = response_body.get('embeddings')
-        for i, embedding_type in enumerate(embeddings):
-            print(f"\t{embedding_type} Embeddings:")
-            print(f"\t{embeddings[embedding_type]}")
 
     except ClientError as err:
         message = err.response["Error"]["Message"]
         logger.error("A client error occurred: %s", message)
         print("A client error occured: " +
               format(message))
+        
     else:
-        print(
-            f"Finished generating text embeddings with Cohere model {model_id}.")
+        return embeddings
+
 
 
 if __name__ == "__main__":
-    main(model_id, chunks, region_name, input_type)
+    input_embeddings = main(model_id, chunks_to_embed, region_name, input_type)
 
 
 # use pinecone to store the embeddings
