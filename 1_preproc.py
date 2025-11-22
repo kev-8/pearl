@@ -1,10 +1,12 @@
 # load in libraries
+import os
 import pandas as pd
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import json
 import boto3
 import logging
 from botocore.exceptions import ClientError
+from pinecone import Pinecone
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -29,7 +31,7 @@ def doc_to_text_list(doc_list):
     for d in doc_list:
         if d is None:
             continue
-        if hasattr(d, "page_content"): # Document-like?
+        if hasattr(d, "page_content"): # check if Document-like
             output.append(str(d.page_content))
         else:
             output.append(str(d))
@@ -103,3 +105,5 @@ if __name__ == "__main__":
 
 
 # use pinecone to store the embeddings
+pinecone_api_key = os.getenv('PINECONE_API_KEY')
+pc = Pinecone(api_key=pinecone_api_key)
