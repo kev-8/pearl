@@ -7,6 +7,7 @@ import boto3
 import logging
 from botocore.exceptions import ClientError
 from pinecone import Pinecone
+import uuid
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -107,3 +108,22 @@ if __name__ == "__main__":
 # use pinecone to store the embeddings
 pinecone_api_key = os.getenv('PINECONE_API_KEY')
 pc = Pinecone(api_key=pinecone_api_key)
+index = pc.Index('pearl-index')
+
+if input_embeddings:
+    # build Pinecone records with explicit IDs and metadata
+    records = []
+    for i, emb in enumerate(input_embeddings):
+        rec_id = f"chunk-{i}"
+        metadata = {"text": chunks_to_embed[i]}
+        # Pinecone expects a dict with id, values, and optional metadata
+        records.append({"id": rec_id, "values": emb, "metadata": metadata})
+
+    try:
+        # Use the index upsert to store vectors
+        resp = index.upsert(vectors=records)
+        logger.info("Upserted %d vectors to Pinecone", len(records))
+        print(f"Upserted {len(records)} vectors to Pinecone: {resp}")
+    except Exception as e:
+        logger.error("Failed to upsert to Pinecone: %s", e)
+        print("Failed to upsert to Pinecone:", e)
