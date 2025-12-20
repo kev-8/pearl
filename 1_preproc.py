@@ -164,3 +164,5 @@ try:
 except Exception as e:
     logger.error("Failed to upsert to Pinecone: %s", e)
     print("Failed to upsert to Pinecone:", e)
+
+    
