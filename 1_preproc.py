@@ -145,7 +145,7 @@ print("Saved temporary embeddings to ./temp_embeddings.json")
 #     input_embeddings = json.load(f)
 
 
-# use Pinecone vector databse to store the embeddings
+# use Pinecone vector database to store the embeddings
 pinecone_api_key = os.getenv('PINECONE_API_KEY')
 pc = Pinecone(api_key=pinecone_api_key)
 index = pc.Index('index-1')
