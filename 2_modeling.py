@@ -9,13 +9,25 @@ from pinecone import Pinecone
 from ddgs import DDGS
 from botocore.exceptions import ClientError
 
+
+# import boto3
+
+# bedrock = boto3.client("bedrock")
+# resp = bedrock.list_foundation_models(
+#     byInferenceType="ON_DEMAND"
+# )
+
+# for m in resp["modelSummaries"]:
+#     print(m["modelId"], m.get("inferenceTypesSupported"))
+
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
 # function to send a message to Anthropic 
 def send_message_to_anthropic(messages: list[dict], 
-                              model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0", 
+                              model_id: str = "anthropic.claude-3-haiku-20240307-v1:0", 
                               region_name: str = 'us-east-1', 
                               max_tokens: int = 512,
                               tools: list[dict] = None) -> dict:
@@ -24,7 +36,7 @@ def send_message_to_anthropic(messages: list[dict],
 
     Args:
         messages (list[dict]): List of message dicts, e.g., [{"role": "user", "content": "Hello"}]
-        model_id (str): The model ID to use (default is Claude 3 Sonnet).
+        model_id (str): The model ID to use (default is Claude Haiku 4.5).
         region_name (str): The AWS region to invoke the model on.
         max_tokens (int): Maximum number of tokens to generate.
         tools (list[dict]): List of tool schemas for tool calling.
@@ -47,11 +59,11 @@ def send_message_to_anthropic(messages: list[dict],
     if tools:
         body["tools"] = tools
 
-    body = json.dumps(body)
+    request = json.dumps(body)
 
     try:
         response = bedrock.invoke_model(
-            body=body,
+            body=request,
             modelId=model_id,
             accept=accept,
             contentType=content_type
@@ -65,26 +77,8 @@ def send_message_to_anthropic(messages: list[dict],
     except ClientError as err:
         error_code = err.response["Error"]["Code"]
         message = err.response["Error"]["Message"]
-        if error_code == "ThrottlingException":
-            logger.warning("Throttling detected: %s. Retrying after delay.", message)
-            time.sleep(5)  # Wait 5 seconds before retrying
-            # Simple retry once; for more, could loop
-            try:
-                response = bedrock.invoke_model(
-                    body=body,
-                    modelId=model_id,
-                    accept=accept,
-                    contentType=content_type
-                )
-                response_body = json.loads(response.get('body').read())
-                logger.info("Successfully received response after retry")
-                return response_body
-            except ClientError as retry_err:
-                logger.error("Retry failed: %s", retry_err.response["Error"]["Message"])
-                raise retry_err
-        else:
-            logger.error("A client error occurred: %s", message)
-            raise
+        logger.error("A client error occurred: %s", message)
+        raise
     except Exception as e:
         logger.error("An unexpected error occurred: %s", str(e))
         raise
@@ -158,25 +152,9 @@ functions_map = {
     "pinecone_search": pinecone_search,
 }
 
-# agentic workflow function to call tools as needed
-def run_agent(user_query: str, max_iterations: int = 5) -> str:
-    """
-    Completes an agentic workflow using Anthropic model and available tools.
-    The agent plans, calls tools, and iterates until a final answer is reached.
+# TODO: troubleshoot Pinecone embedding storage and pinecone search tool call
 
-    Args:
-        user_query (str): The user's query.
-        max_iterations (int): Maximum number of planning/execution cycles.
 
-    Returns:
-        str: The final answer from the agent.
-    """
-    messages = [{"role": "user", "content": user_query}]
-    
-    for iteration in range(max_iterations):
-        logger.info(f"Iteration {iteration + 1}: Calling Anthropic model")
-        
-        # Call the model with tools
 # agentic workflow function to call tools as needed
 def run_agent(user_query: str, max_iterations: int = 5) -> str:
     """
@@ -217,7 +195,7 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
             for tool_call in tool_calls:
                 tool_name = tool_call.get('name')
                 tool_input = tool_call.get('input', {})
-                tool_call_id = tool_call.get('id')
+                tool_use_id = tool_call.get('id')
                 
                 logger.info(f"Executing tool: {tool_name} with input: {tool_input}")
                 
@@ -230,7 +208,7 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
                             "content": [
                                 {
                                     "type": "tool_result",
-                                    "tool_call_id": tool_call_id,
+                                    "tool_use_id": tool_use_id,
                                     "content": json.dumps(result)
                                 }
                             ]
@@ -242,7 +220,7 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
                             "content": [
                                 {
                                     "type": "tool_result",
-                                    "tool_call_id": tool_call_id,
+                                    "tool_use_id": tool_use_id,
                                     "content": f"Error: {str(e)}"
                                 }
                             ]
@@ -271,8 +249,9 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
     logger.warning("Max iterations reached, returning last response")
     return text_content.strip() if text_content else "Unable to complete the workflow within the iteration limit."
 
+
 if __name__ == "__main__":
-    query = "What happened on Air Transat flight TS663 from Port-au-Prince to Montreal?"
+    query = "How many long-term care homes did the Canadian Armed Forces (CAF) manage? Provide details."
     answer = run_agent(query)
     print("Final Answer:", answer)
 
