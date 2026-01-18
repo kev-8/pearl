@@ -232,7 +232,7 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
                         "content": [
                             {
                                 "type": "tool_result",
-                                "tool_call_id": tool_call_id,
+                                "tool_use_id": tool_use_id,
                                 "content": f"Unknown tool: {tool_name}"
                             }
                         ]
