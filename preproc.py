@@ -24,6 +24,7 @@ text_splitter = RecursiveCharacterTextSplitter(chunk_size=500,
 
 chunks = text_splitter.create_documents(texts_raw)
 
+
 def doc_to_text_list(doc_list):
     """Convert a list of Document objects to a list of strings."""
     output = []
@@ -40,13 +41,8 @@ def doc_to_text_list(doc_list):
 chunks_to_embed = doc_to_text_list(chunks) 
 chunks_to_embed = [i for i in chunks_to_embed if "URL not found" not in i]
 
-# define embedding model parameters
-model_id = "cohere.embed-v4:0"
-region_name = 'us-east-1'
-input_type = "search_document"
 
-
-def generate_text_embeddings(model_id, body, region_name):
+def generate_text_embeddings(body, model_id="cohere.embed-v4:0", region_name='us-east-1'):
     """
     Generate text embedding by using the Cohere Embed model.
     Args:
@@ -57,7 +53,7 @@ def generate_text_embeddings(model_id, body, region_name):
         dict: The response from the model.
     """
 
-    logger.info("\n\nGenerating text embeddings with Cohere Embed %s...", model_id)
+    logger.info("\n\nGenerating text embeddings with Cohere Embed...")
 
     accept = '*/*'
     content_type = 'application/json'
@@ -105,19 +101,19 @@ def normalize_embeddings(embeddings, expected_n=None):
     return flat
 
 
-def main(model_id, chunks_to_embed, region_name, input_type):
+def main(chunks_to_embed):
     """Entrypoint for Cohere Embed example."""
 
     body_dict = {
         "texts": chunks_to_embed,
-        "input_type": input_type,
+        "input_type": 'search_document',
     }
 
     body_json = json.dumps(body_dict, ensure_ascii=False)
     body_bytes = body_json.encode("utf-8")
 
     try:
-        response_json = generate_text_embeddings(model_id, body_bytes, region_name)
+        response_json = generate_text_embeddings(body_bytes)
     except ClientError as err:
         logger.error("ClientError: %s", err)
         raise
@@ -128,41 +124,42 @@ def main(model_id, chunks_to_embed, region_name, input_type):
     return embeddings
 
 
-if __name__ == "__main__":
-    input_embeddings = main(model_id, chunks_to_embed, region_name, input_type)
 
-# flatten if needed
-if len(input_embeddings) == 1 and isinstance(input_embeddings[0], list):
-    input_embeddings = input_embeddings[0]
+# if __name__ == "__main__":
+#     input_embeddings = main(chunks_to_embed)
+
+# # flatten if needed
+# if len(input_embeddings) == 1 and isinstance(input_embeddings[0], list):
+#     input_embeddings = input_embeddings[0]
 
 
-with open('./temp_embeddings.json', 'w') as f:
-    json.dump(input_embeddings, f)
-print("Saved temporary embeddings to ./temp_embeddings.json")
+# with open('./temp_embeddings.json', 'w') as f:
+#     json.dump(input_embeddings, f)
+# print("Saved temporary embeddings to ./temp_embeddings.json")
 
 # # load temp embeddings from file
 # with open('./temp_embeddings.json', 'r') as f:
 #     input_embeddings = json.load(f)
 
 
-# use Pinecone vector database to store the embeddings
-pinecone_api_key = os.getenv('PINECONE_API_KEY')
-pc = Pinecone(api_key=pinecone_api_key)
-index = pc.Index('index-1')
+# # use Pinecone vector database to store the embeddings
+# pinecone_api_key = os.getenv('PINECONE_API_KEY')
+# pc = Pinecone(api_key=pinecone_api_key)
+# index = pc.Index('index-1')
 
-records = []
-for i, emb in enumerate(input_embeddings):
-    # build records with explicit IDs
-    rec_id = f"chunk-{i}"  
-    records.append({"id": rec_id, "values": emb})
+# records = []
+# for i, emb in enumerate(input_embeddings):
+#     # build records with explicit IDs
+#     rec_id = f"chunk-{i}"  
+#     records.append({"id": rec_id, "values": emb, "metadata": {"text": chunks_to_embed[i]}})
 
-try:
-    # use the index upsert to store vectors
-    resp = index.upsert(vectors=records)
-    logger.info("Upserted %d vectors to Pinecone", len(records))
-    print(f"Upserted {len(records)} vectors to Pinecone: {resp}")
-except Exception as e:
-    logger.error("Failed to upsert to Pinecone: %s", e)
-    print("Failed to upsert to Pinecone:", e)
+# try:
+#     # use the index upsert to store vectors
+#     resp = index.upsert(vectors=records)
+#     logger.info("Upserted %d vectors to Pinecone", len(records))
+#     print(f"Upserted {len(records)} vectors to Pinecone: {resp}")
+# except Exception as e:
+#     logger.error("Failed to upsert to Pinecone: %s", e)
+#     print("Failed to upsert to Pinecone:", e)
 
     

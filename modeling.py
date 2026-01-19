@@ -8,6 +8,7 @@ import time
 from pinecone import Pinecone
 from ddgs import DDGS
 from botocore.exceptions import ClientError
+from preproc import generate_text_embeddings, normalize_embeddings
 
 
 # import boto3
@@ -19,7 +20,6 @@ from botocore.exceptions import ClientError
 
 # for m in resp["modelSummaries"]:
 #     print(m["modelId"], m.get("inferenceTypesSupported"))
-
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -111,20 +111,38 @@ def pinecone_search(query: str) -> list[dict]:
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
     pc = Pinecone(api_key=pinecone_api_key)
     index = pc.Index('index-1')
-    results = index.search(
+
+    body_dict = {
+        "texts": [query],
+        "input_type": 'search_query',
+    }
+
+    body_json = json.dumps(body_dict, ensure_ascii=False)
+    body_bytes = body_json.encode("utf-8")
+
+    try:
+        response_json = generate_text_embeddings(body_bytes)
+    except ClientError as err:
+        logger.error("ClientError: %s", err)
+        raise
+
+    output = response_json.get('embeddings') or response_json.get('embedding')
+    embeddings = normalize_embeddings(output, expected_n=len(query))
+
+    results = index.query(
         namespace='__default__',
-        query={
-            'inputs': {'text': query}, 
-            'top_k': 5
-        },
-        rerank={
-            'model': 'bge-reranker-v2-m3',
-            'rank_fields': ['chunk_text'],
-            'top_n': 3
-        }
+        vector=embeddings[0],
+        top_k=3,
+        include_metadata=True
     )
 
-    return results['result']['matches']
+    return results
+
+
+# query = 'Tell me what happened with flight TS663 on January 10'
+# results = pinecone_search(query)
+# print("Pinecone Search Results:", results)
+
 
 pinecone_search_tool = {
     "name": "pinecone_search",
@@ -141,7 +159,7 @@ pinecone_search_tool = {
     }
 }
 
-tools = [
+tools_list = [
     web_search_engine_tool, 
     pinecone_search_tool,
 ]
@@ -151,9 +169,6 @@ functions_map = {
     "web_search_engine": web_search_engine,
     "pinecone_search": pinecone_search,
 }
-
-# TODO: troubleshoot Pinecone embedding storage and pinecone search tool call
-
 
 # agentic workflow function to call tools as needed
 def run_agent(user_query: str, max_iterations: int = 5) -> str:
@@ -174,7 +189,7 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
         logger.info(f"Iteration {iteration + 1}: Calling Anthropic model")
         
         # Call the model with tools
-        response = send_message_to_anthropic(messages, tools=tools)
+        response = send_message_to_anthropic(messages, tools=tools_list)
         
         # Extract content and tool calls
         content_blocks = response.get('content', [])
@@ -251,8 +266,9 @@ def run_agent(user_query: str, max_iterations: int = 5) -> str:
 
 
 if __name__ == "__main__":
-    query = "How many long-term care homes did the Canadian Armed Forces (CAF) manage? Provide details."
+    query = 'Tell me what happened with flight TS663 on January 10'
     answer = run_agent(query)
     print("Final Answer:", answer)
 
 
+# # TODO: add agent functionality to choose the best tool based on the query
