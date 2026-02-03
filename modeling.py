@@ -88,7 +88,7 @@ def search_web(query: str) -> dict:
     search_results = DDGS().text(query, max_results=5)
     return search_results
 
-# model = ChatBedrock(model="anthropic.claude-3-5-sonnet-20240620-v1:0")
+# using haiku for testng 
 model = ChatBedrockConverse(model="anthropic.claude-3-haiku-20240307-v1:0")
 
 retriever_agent = create_agent(
@@ -106,8 +106,6 @@ web_search_agent = create_agent(
 )
 
 router_model = ChatBedrockConverse(model="anthropic.claude-3-haiku-20240307-v1:0")
-# router_model = ChatBedrock(model="anthropic.claude-3-5-sonnet-20240620-v1:0")
-
 
 # Define structured output schema for the classifier
 class ClassificationResult(BaseModel):  
