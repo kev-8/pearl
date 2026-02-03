@@ -1,22 +1,20 @@
 from unittest import result
 import pandas as pd
 import numpy as np
-import boto3
 import logging
 import json
 import os
-import time
 from pinecone import Pinecone
 from ddgs import DDGS
 from botocore.exceptions import ClientError
 import operator
 from typing import Annotated, Literal, TypedDict
 from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
 from langchain.tools import tool
+from langchain_aws import ChatBedrockConverse
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
-from langchain_aws import ChatBedrockConverse
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
 from preproc import generate_text_embeddings, normalize_embeddings
 
@@ -216,17 +214,34 @@ workflow = (
 )
 
 
-if __name__ == "__main__":
-    query = 'What is Haiti\'s largest industry?'
+# state tracking so the agent can engage in multi-turn conversations
+@tool
+def search_knowledge_sources(query: str) -> str:
+    """Search both Pinecone and web sources and return combined results to answer the query."""
     answer = workflow.invoke({"query": query})
-    print("Original query:", answer["query"])
-    print("\nClassifications:")
-    for c in answer["classifications"]:
-        print(f"  {c['source']}: {c['query']}")
-    print("\n" + "=" * 60 + "\n")
-    print("Final Answer:")
-    print(answer["final_answer"])
+    return answer["final_answer"]
+
+conversational_agent = create_agent(
+    model=model,
+    tools=[search_knowledge_sources],
+    system_prompt=(
+        "You are an intelligent assistant that can search multiple knowledge sources to answer user queries about Haiti."
+        "Use the search_knowledge_sources tool to find relevant information across all sources."
+    ),
+    checkpointer=InMemorySaver()
+)
+
+if __name__ == "__main__":
+    query = 'Tell me more about the other significant industries.'
+
+    config = {"configurable": {"thread_id": "thread-1"}}
+    answer = conversational_agent.invoke(
+        {"messages": [{"role": "user", "content": query}]},
+        config=config)
+
+    print("\nFinal Answer:\n", answer["messages"][-1].content)
 
 
-# TODO: incorporate state tracking, so the agent can remember previous interactions
+# TODO: test how many tokens are used in each step and optimize prompts further
+
 
