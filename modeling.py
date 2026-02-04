@@ -121,26 +121,12 @@ def classify_query(state: RouterState) -> dict:
         {
             "role": "system",
             "content": 
-                    """Analyze this query and determine which knowledge bases to consult.
-                    For each relevant source, generate a targeted sub-question optimized for that source.
-
-                    Available sources:
-                    - pinecone: historical information, archived data, past events
-                    - web search engine: current events, recent news, up-to-date information
-
-                    Return ONLY the sources that are relevant to the query. Each source should have
-                    a targeted sub-question optimized for that specific knowledge domain.
-
-                    Examples:
-
-                    Example for "Tell me about Haiti in the 1974 World Cup":
-                    - pinecone: "What historical events occurred involving Haiti in the 1974 World Cup?"
-                    - web search engine: (not relevant, do not include)
-
-                    Example for "What is the largest export of Haiti?":
-                    - pinecone: "What historical data exists about Haiti's exports?"
-                    - web search engine: "What are the current largest exports of Haiti?"
-                    """
+                    """Determine which sources are relevant:
+                    - pinecone: historical/archived data
+                    - web: current events/recent information
+                    
+                    For each relevant source, create an optimized sub-question.
+                    Return only relevant sources."""
     },
         {"role": "user", "content": state["query"]}
     ])
@@ -172,12 +158,26 @@ def query_web_search(state: AgentInput) -> dict:
     return {"results": [{"source": "web_search", "result": result["messages"][-1].content}]}
 
 
+def has_conflicting_results(results: list[AgentOutput]) -> bool:
+    """Check if results from different sources contain conflicting information."""
+    if len(results) <= 1:
+        return False
+    
+    # Multiple sources means potential conflicts requiring synthesis
+    sources = [r['source'] for r in results]
+    return len(set(sources)) > 1
+
+
 def synthesize_results(state: RouterState) -> dict:
     """Combine results from all agents into a coherent answer."""
     if not state["results"]:
         return {"final_answer": "No results found from any knowledge source."}
 
-    # Format results for synthesis
+    # If single source or no conflicts, return directly without synthesis
+    if not has_conflicting_results(state["results"]):
+        return {"final_answer": state["results"][0]["result"]}
+
+    # Format results for synthesis only when needed
     formatted = [
         f"**From {r['source'].title()}:**\n{r['result']}"
         for r in state["results"]
@@ -186,12 +186,11 @@ def synthesize_results(state: RouterState) -> dict:
     synthesis_response = router_model.invoke([
         {
             "role": "system",
-            "content": f"""Synthesize these search results to answer the original question: "{state['query']}"
-
-            - Combine information from multiple sources without redundancy
-            - Highlight the most relevant and actionable information
-            - Note any discrepancies between sources
-            - Keep the response concise and well-organized"""
+            "content": f"""Synthesize to answer: "{state['query']}"
+            - Combine sources without redundancy
+            - Highlight key information
+            - Note discrepancies
+            - Keep concise"""
         },
         {"role": "user", "content": "\n\n".join(formatted)}
     ])
@@ -240,8 +239,5 @@ if __name__ == "__main__":
         config=config)
 
     print("\nFinal Answer:\n", answer["messages"][-1].content)
-
-
-# TODO: test how many tokens are used in each step and optimize prompts further
 
 
