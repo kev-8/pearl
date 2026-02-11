@@ -1,5 +1,6 @@
 # load in libraries
 import os
+import sys
 import pandas as pd
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import json
@@ -13,8 +14,12 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
-# load in data 
-df = pd.read_csv('/Users/kevin/Desktop/ds/other/test_df.csv')
+# --- Metadata columns used by DLOC pipeline (optional in other CSVs) ---
+METADATA_COLS = ["SQLDATE", "source_url", "issue_id", "top_entity_names", "top_entity_labels"]
+
+# load in data — accept path as CLI arg or use default
+csv_path = sys.argv[1] if len(sys.argv) > 1 else '/Users/kevin/Desktop/ds/other/test_df.csv'
+df = pd.read_csv(csv_path)
 
 # use text splitter to chunk articles (chunk_size=500 to be under Cohere embedding model token length)
 texts_raw = df['article_text'].fillna("").astype(str).tolist()
@@ -23,6 +28,12 @@ text_splitter = RecursiveCharacterTextSplitter(chunk_size=500,
                                                is_separator_regex=False)
 
 chunks = text_splitter.create_documents(texts_raw)
+
+# Build chunk-to-row mapping so each chunk carries its parent article's metadata
+chunk_row_indices = []
+for row_idx, text in enumerate(texts_raw):
+    row_chunks = text_splitter.split_text(text)
+    chunk_row_indices.extend([row_idx] * len(row_chunks))
 
 
 def doc_to_text_list(doc_list):
@@ -149,9 +160,15 @@ def main(chunks_to_embed):
 
 # records = []
 # for i, emb in enumerate(input_embeddings):
-#     # build records with explicit IDs
-#     rec_id = f"chunk-{i}"  
-#     records.append({"id": rec_id, "values": emb, "metadata": {"text": chunks_to_embed[i]}})
+#     # build records with explicit IDs and parent article metadata
+#     rec_id = f"chunk-{i}"
+#     meta = {"text": chunks_to_embed[i]}
+#     if i < len(chunk_row_indices):
+#         row = df.iloc[chunk_row_indices[i]]
+#         for col in METADATA_COLS:
+#             if col in df.columns and pd.notna(row.get(col)):
+#                 meta[col.lower()] = str(row[col])
+#     records.append({"id": rec_id, "values": emb, "metadata": meta})
 
 # try:
 #     # use the index upsert to store vectors
@@ -162,4 +179,4 @@ def main(chunks_to_embed):
 #     logger.error("Failed to upsert to Pinecone: %s", e)
 #     print("Failed to upsert to Pinecone:", e)
 
-    
+# DLOC Le Nouvelliste data available via: python -m dloc.run_pipeline --phase all --year 1950

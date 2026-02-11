@@ -1,3 +1,4 @@
 .DS_Store
 temp_embeddings.json
-__pycache__/preproc.cpython-314.pyc
+__pycache__/
+dloc/data/
