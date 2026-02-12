@@ -28,7 +28,8 @@ async def fetch_with_retry(
                 resp.raise_for_status()
                 if binary:
                     return await resp.read()
-                return await resp.text()
+                raw = await resp.read()
+                return safe_decode(raw)
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             wait = backoff * (2 ** (attempt - 1))
             logger.warning("Attempt %d/%d failed for %s: %s — retrying in %.1fs",
