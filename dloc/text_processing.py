@@ -37,12 +37,46 @@ def clean_ocr_text(text: str) -> str:
     """Normalize unicode, remove common OCR artifacts, preserve French diacritics."""
     # Normalize to NFC (canonical composed form)
     text = unicodedata.normalize("NFC", text)
-    # Replace common OCR artifacts
-    text = text.replace("\x0c", "\n")        # form feed
-    text = re.sub(r"[|}{~\\]", "", text)     # stray symbols
-    # Collapse runs of whitespace (but keep single newlines)
+
+    # Remove control characters (keep newline and tab)
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", text)
+
+    # Remove stray OCR symbols and noise
+    text = re.sub(r"[|}{~\\^`£¢¥§©®°±×÷•¶†‡]", "", text)
+
+    # Remove repeated punctuation artifacts (e.g., "...", "---", "===")
+    text = re.sub(r"([.\-=_*#])\1{2,}", "", text)
+
+    # Remove isolated single/double characters surrounded by spaces
+    # (common OCR fragments like " a " or " :" that aren't real words)
+    text = re.sub(r"(?<=\s)[^a-zA-ZàâäéèêëïîôùûüÿçœæÀÂÄÉÈÊËÏÎÔÙÛÜŸÇŒÆ\d]{1,2}(?=\s)", " ", text)
+
+    # Remove « » guillemets (often OCR noise in this corpus)
+    text = re.sub(r"[«»]", "", text)
+
+    # Remove quotes that appear as artifacts
+    text = re.sub(r'(?<!\w)["\'](?!\w)', "", text)
+
+    # Collapse runs of whitespace (but keep paragraph breaks)
     text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # Remove lines that are just noise (very short or all punctuation/digits)
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Keep blank lines (paragraph breaks) and lines with real content
+        if not stripped:
+            cleaned_lines.append("")
+        elif len(stripped) > 3 and re.search(r"[a-zA-ZàâäéèêëïîôùûüÿçœæÀÂÄÉÈÊËÏÎÔÙÛÜŸÇŒÆ]{2,}", stripped):
+            cleaned_lines.append(stripped)
+    text = "\n".join(cleaned_lines)
+
+    # Final collapse of excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
     return text.strip()
 
 
