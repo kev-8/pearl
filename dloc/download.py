@@ -12,9 +12,12 @@ from .config import (
     REQUEST_DELAY,
     RAW_OCR_DIR,
     RAW_PDF_DIR,
+    DATA_DIR,
     serial_hierarchy_url,
+    citation_url,
     ocr_page_url,
     pdf_url,
+    page_image_url,
 )
 from .utils import fetch_with_retry, load_progress, mark_done
 
@@ -163,6 +166,79 @@ async def download_year(
     return done_vids
 
 
+async def _fetch_page_count(session: aiohttp.ClientSession, vid: str) -> int:
+    """Get the page count for a VID from the citation API."""
+    raw = await fetch_with_retry(session, citation_url(vid))
+    if raw is None:
+        return 0
+    data = json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode())
+    return data.get("pageCount", 0) or 0
+
+
+async def download_page_images(
+    session: aiohttp.ClientSession,
+    vid: str,
+    page_count: int,
+    sem: asyncio.Semaphore,
+) -> int:
+    """Download per-page JPEG images for *vid*.  Returns pages downloaded."""
+    img_dir = DATA_DIR / "raw" / "page_images" / vid
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    downloaded = 0
+    for page in range(1, page_count + 1):
+        dest = img_dir / f"{page:05d}.jpg"
+        if dest.exists():
+            downloaded += 1
+            continue
+        async with sem:
+            data = await fetch_with_retry(session, page_image_url(vid, page), binary=True)
+            await asyncio.sleep(REQUEST_DELAY)
+        if data is None:
+            logger.warning("VID %s: page %d image not found", vid, page)
+            continue
+        dest.write_bytes(data)
+        downloaded += 1
+
+    if downloaded:
+        logger.info("VID %s: downloaded %d page image(s)", vid, downloaded)
+    else:
+        logger.warning("VID %s: no page images found", vid)
+    return downloaded
+
+
+async def download_year_images(
+    session: aiohttp.ClientSession,
+    year: int,
+) -> list[str]:
+    """Download page JPEG images for all issues in *year*.  Resumable."""
+    all_vids = await fetch_all_vids(session)
+    year_str = str(year)
+    year_vids = [v for v in all_vids if (v.get("date") or "").startswith(year_str)]
+    logger.info("Year %d: %d issues found for image download", year, len(year_vids))
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
+    done_vids = []
+
+    for entry in year_vids:
+        vid = entry["vid"]
+        img_dir = DATA_DIR / "raw" / "page_images" / vid
+        # Skip if already has images (resumable at VID level)
+        if img_dir.exists() and any(img_dir.glob("*.jpg")):
+            done_vids.append(vid)
+            continue
+        page_count = await _fetch_page_count(session, vid)
+        if not page_count:
+            logger.warning("VID %s: could not determine page count, skipping", vid)
+            continue
+        pages = await download_page_images(session, vid, page_count, sem)
+        if pages:
+            done_vids.append(vid)
+
+    logger.info("Year %d image download complete: %d issues", year, len(done_vids))
+    return done_vids
+
+
 async def run_download(phase: str, year: int = 1950, n: int = 20) -> list[str]:
     """Convenience wrapper that creates a session and runs the requested phase."""
     timeout = aiohttp.ClientTimeout(total=300)
@@ -171,5 +247,7 @@ async def run_download(phase: str, year: int = 1950, n: int = 20) -> list[str]:
             return await download_sample(session, year=year, n=n)
         elif phase == "download":
             return await download_year(session, year=year)
+        elif phase == "download_images":
+            return await download_year_images(session, year=year)
         else:
             raise ValueError(f"Unknown download phase: {phase}")

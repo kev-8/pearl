@@ -29,6 +29,11 @@ def pdf_url(vid: str) -> str:
     return f"{FILE_SERVER}/{vid}/{BIBID}_{vid}.pdf"
 
 
+def page_image_url(vid: str, page: int) -> str:
+    """URL for a single page JPEG image (1-indexed, zero-padded to 5 digits)."""
+    return f"{FILE_SERVER}/{vid}/{page:05d}.jpg"
+
+
 def dloc_issue_url(vid: str) -> str:
     """Public DLOC viewer URL for an issue."""
     return f"https://dloc.com/{BIBID}/{vid}"

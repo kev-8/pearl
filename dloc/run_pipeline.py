@@ -4,6 +4,8 @@ Usage:
     python -m dloc.run_pipeline --phase sample --year 1950
     python -m dloc.run_pipeline --phase compare
     python -m dloc.run_pipeline --phase download --year 1950
+    python -m dloc.run_pipeline --phase download-images --year 1910
+    python -m dloc.run_pipeline --phase tesseract --year 1910
     python -m dloc.run_pipeline --phase process
     python -m dloc.run_pipeline --phase build
     python -m dloc.run_pipeline --phase all --year 1950
@@ -16,7 +18,7 @@ import logging
 
 from .config import RAW_OCR_DIR, DATA_DIR
 from .download import run_download
-from .ocr_compare import run_comparison
+from .ocr_compare import run_comparison, run_tesseract_batch
 from .text_processing import process_all
 from .dataset_builder import build_dataset
 
@@ -67,12 +69,13 @@ async def _save_vid_metadata(year: int) -> None:
 def main():
     parser = argparse.ArgumentParser(description="DLOC Le Nouvelliste pipeline")
     parser.add_argument("--phase", required=True,
-                        choices=["sample", "compare", "download", "process", "build", "all"])
-    parser.add_argument("--year", type=int, default=1950)
+                        choices=["sample", "compare", "download", "download-images",
+                                 "tesseract", "process", "build", "all"])
+    parser.add_argument("--year", type=int, default=None)
     parser.add_argument("--sample-size", type=int, default=20)
     args = parser.parse_args()
 
-    if args.phase in ("sample", "download", "all"):
+    if args.phase in ("sample", "download", "download-images", "all"):
         # Cache VID metadata for later use
         asyncio.run(_save_vid_metadata(args.year))
 
@@ -86,6 +89,14 @@ def main():
     elif args.phase == "download":
         vids = asyncio.run(run_download("download", year=args.year))
         logger.info("Full download complete: %d issues", len(vids))
+
+    elif args.phase == "download-images":
+        vids = asyncio.run(run_download("download_images", year=args.year))
+        logger.info("Image download complete: %d issues", len(vids))
+
+    elif args.phase == "tesseract":
+        count = run_tesseract_batch(year=args.year)
+        logger.info("Tesseract OCR complete: %d issues processed", count)
 
     elif args.phase == "process":
         vid_dates = _discover_vid_dates(year=args.year)
