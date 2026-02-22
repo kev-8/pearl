@@ -1,40 +1,31 @@
-# load in libraries
 import os
 import sys
-import pandas as pd
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+import argparse
+import time
 import json
-import boto3
 import logging
+
+import boto3
+import pandas as pd
 from botocore.exceptions import ClientError
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
 
-
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
-# --- Metadata columns used by DLOC pipeline (optional in other CSVs) ---
 METADATA_COLS = ["SQLDATE", "source_url", "issue_id", "top_entity_names", "top_entity_labels"]
+EMBED_BATCH_SIZE = 96       # Bedrock Cohere Embed v4 limit
+UPSERT_BATCH_SIZE = 100     # Pinecone recommended batch size
+MAX_META_BYTES = 40_000     # Pinecone 40KB metadata limit per vector
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 1.0      # seconds, exponential backoff base
 
-# load in data — accept path as CLI arg or use default
-csv_path = sys.argv[1] if len(sys.argv) > 1 else '/Users/kevin/Desktop/ds/other/test_df.csv'
-df = pd.read_csv(csv_path)
 
-# use text splitter to chunk articles (chunk_size=500 to be under Cohere embedding model token length)
-texts_raw = df['article_text'].fillna("").astype(str).tolist()
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=500,
-                                               chunk_overlap=50,
-                                               is_separator_regex=False)
-
-chunks = text_splitter.create_documents(texts_raw)
-
-# Build chunk-to-row mapping so each chunk carries its parent article's metadata
-chunk_row_indices = []
-for row_idx, text in enumerate(texts_raw):
-    row_chunks = text_splitter.split_text(text)
-    chunk_row_indices.extend([row_idx] * len(row_chunks))
-
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
 def doc_to_text_list(doc_list):
     """Convert a list of Document objects to a list of strings."""
@@ -42,30 +33,23 @@ def doc_to_text_list(doc_list):
     for d in doc_list:
         if d is None:
             continue
-        if hasattr(d, "page_content"): # check if Document-like
+        if hasattr(d, "page_content"):
             output.append(str(d.page_content))
         else:
             output.append(str(d))
     return output
-
-# get list of strings from Document objects
-chunks_to_embed = doc_to_text_list(chunks) 
-chunks_to_embed = [i for i in chunks_to_embed if "URL not found" not in i]
 
 
 def generate_text_embeddings(body, model_id="cohere.embed-v4:0", region_name='us-east-1'):
     """
     Generate text embedding by using the Cohere Embed model.
     Args:
+        body (str) : The request body to use.
         model_id (str): The model ID to use.
-        body (str) : The reqest body to use.
-        region_name (str): The AWS region to invoke the model on
+        region_name (str): The AWS region to invoke the model on.
     Returns:
         dict: The response from the model.
     """
-
-    logger.info("\n\nGenerating text embeddings with Cohere Embed...")
-
     accept = '*/*'
     content_type = 'application/json'
 
@@ -92,12 +76,10 @@ def normalize_embeddings(embeddings, expected_n=None):
     """
     Normalize different possible shapes of embeddings into a flat list:
       - If embeddings is a dict mapping indices->vector -> convert to sorted list
+      - If already a list, return as-is
     Optionally check against expected_n (number of input texts) and log a warning.
     """
-
-    # If dict keyed by indices
     if isinstance(embeddings, dict):
-        # try to convert index keys to int and sort
         try:
             items = sorted(embeddings.items(), key=lambda kv: int(kv[0]))
             flat = [v for k, v in items]
@@ -105,78 +87,221 @@ def normalize_embeddings(embeddings, expected_n=None):
                 logger.warning("embeddings dict length != expected_n: %d != %s", len(flat), expected_n)
             return flat
         except Exception:
-            # fallback — return dict values
-            flat = list(embeddings.values())
-            return flat
+            return list(embeddings.values())
 
-    return flat
+    if isinstance(embeddings, list):
+        if expected_n is not None and len(embeddings) != expected_n:
+            logger.warning("embeddings list length != expected_n: %d != %s", len(embeddings), expected_n)
+        return embeddings
 
-
-def main(chunks_to_embed):
-    """Entrypoint for Cohere Embed example."""
-
-    body_dict = {
-        "texts": chunks_to_embed,
-        "input_type": 'search_document',
-    }
-
-    body_json = json.dumps(body_dict, ensure_ascii=False)
-    body_bytes = body_json.encode("utf-8")
-
-    try:
-        response_json = generate_text_embeddings(body_bytes)
-    except ClientError as err:
-        logger.error("ClientError: %s", err)
-        raise
-
-    output = response_json.get('embeddings') or response_json.get('embedding')
-    embeddings = normalize_embeddings(output, expected_n=len(chunks_to_embed))
-
-    return embeddings
+    raise ValueError(f"Unexpected embeddings type: {type(embeddings)}")
 
 
+# ---------------------------------------------------------------------------
+# Chunking
+# ---------------------------------------------------------------------------
 
-# if __name__ == "__main__":
-#     input_embeddings = main(chunks_to_embed)
+def chunk_dataframe(df):
+    """Split article_text into chunks and build chunk-to-row index mapping."""
+    texts_raw = df['article_text'].fillna("").astype(str).tolist()
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500, chunk_overlap=50, is_separator_regex=False
+    )
 
-# # flatten if needed
-# if len(input_embeddings) == 1 and isinstance(input_embeddings[0], list):
-#     input_embeddings = input_embeddings[0]
+    chunks = text_splitter.create_documents(texts_raw)
+
+    chunk_row_indices = []
+    for row_idx, text in enumerate(texts_raw):
+        row_chunks = text_splitter.split_text(text)
+        chunk_row_indices.extend([row_idx] * len(row_chunks))
+
+    chunks_text = doc_to_text_list(chunks)
+    chunks_text = [t for t in chunks_text if "URL not found" not in t]
+
+    logger.info("Chunking complete: %d chunks from %d articles", len(chunks_text), len(df))
+    return chunks_text, chunk_row_indices
 
 
-# with open('./temp_embeddings.json', 'w') as f:
-#     json.dump(input_embeddings, f)
-# print("Saved temporary embeddings to ./temp_embeddings.json")
+# ---------------------------------------------------------------------------
+# Batch embedding with checkpoint/resume
+# ---------------------------------------------------------------------------
 
-# # load temp embeddings from file
-# with open('./temp_embeddings.json', 'r') as f:
-#     input_embeddings = json.load(f)
+def _embed_batch_with_retry(texts):
+    """Embed a single batch of texts with exponential-backoff retry."""
+    body_dict = {"texts": texts, "input_type": "search_document"}
+    body_bytes = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response_json = generate_text_embeddings(body_bytes)
+            raw_emb = response_json.get('embeddings') or response_json.get('embedding')
+            return normalize_embeddings(raw_emb, expected_n=len(texts))
+        except (ClientError, Exception) as e:
+            if attempt == MAX_RETRIES:
+                logger.error("Embedding failed after %d retries: %s", MAX_RETRIES, e)
+                raise
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            logger.warning("Embed attempt %d failed (%s), retrying in %.1fs...", attempt, e, delay)
+            time.sleep(delay)
 
 
-# # use Pinecone vector database to store the embeddings
-# pinecone_api_key = os.getenv('PINECONE_API_KEY')
-# pc = Pinecone(api_key=pinecone_api_key)
-# index = pc.Index('index-1')
+def embed_all_chunks(chunks_text, batch_size, checkpoint_path, resume):
+    """Embed all chunks in batches, writing results to a JSONL checkpoint file."""
+    total_batches = (len(chunks_text) + batch_size - 1) // batch_size
 
-# records = []
-# for i, emb in enumerate(input_embeddings):
-#     # build records with explicit IDs and parent article metadata
-#     rec_id = f"chunk-{i}"
-#     meta = {"text": chunks_to_embed[i]}
-#     if i < len(chunk_row_indices):
-#         row = df.iloc[chunk_row_indices[i]]
-#         for col in METADATA_COLS:
-#             if col in df.columns and pd.notna(row.get(col)):
-#                 meta[col.lower()] = str(row[col])
-#     records.append({"id": rec_id, "values": emb, "metadata": meta})
+    completed_batches = 0
+    if resume and os.path.exists(checkpoint_path):
+        with open(checkpoint_path, 'r') as f:
+            completed_batches = sum(1 for _ in f)
+        logger.info("Resuming from batch %d / %d", completed_batches, total_batches)
 
-# try:
-#     # use the index upsert to store vectors
-#     resp = index.upsert(vectors=records)
-#     logger.info("Upserted %d vectors to Pinecone", len(records))
-#     print(f"Upserted {len(records)} vectors to Pinecone: {resp}")
-# except Exception as e:
-#     logger.error("Failed to upsert to Pinecone: %s", e)
-#     print("Failed to upsert to Pinecone:", e)
+    mode = 'a' if resume and os.path.exists(checkpoint_path) else 'w'
+    with open(checkpoint_path, mode) as cp_file:
+        for batch_idx in range(completed_batches, total_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(chunks_text))
+            batch_texts = chunks_text[start:end]
 
-# DLOC Le Nouvelliste data available via: python -m dloc.run_pipeline --phase all --year 1950
+            embeddings = _embed_batch_with_retry(batch_texts)
+
+            # flatten if needed (single-element wrapper list)
+            if len(embeddings) == 1 and isinstance(embeddings[0], list) and len(batch_texts) > 1:
+                embeddings = embeddings[0]
+
+            cp_file.write(json.dumps(embeddings) + '\n')
+            cp_file.flush()
+
+            if (batch_idx + 1) % 100 == 0 or batch_idx == total_batches - 1:
+                logger.info("Embedded batch %d / %d  (%d chunks so far)",
+                            batch_idx + 1, total_batches, end)
+
+            time.sleep(0.1)  # rate-limit courtesy delay
+
+    # Read back all embeddings from checkpoint
+    all_embeddings = []
+    with open(checkpoint_path, 'r') as f:
+        for line in f:
+            all_embeddings.extend(json.loads(line))
+
+    logger.info("Embedding complete: %d vectors total", len(all_embeddings))
+    return all_embeddings
+
+
+# ---------------------------------------------------------------------------
+# Batch Pinecone upsert
+# ---------------------------------------------------------------------------
+
+def _upsert_batch_with_retry(index, batch):
+    """Upsert a single batch of vectors to Pinecone with retry."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            index.upsert(vectors=batch)
+            return
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                logger.error("Upsert failed after %d retries: %s", MAX_RETRIES, e)
+                raise
+            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+            logger.warning("Upsert attempt %d failed (%s), retrying in %.1fs...", attempt, e, delay)
+            time.sleep(delay)
+
+
+def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df, upsert_progress_path, resume):
+    """Build records with metadata and upsert in batches of UPSERT_BATCH_SIZE."""
+    pinecone_api_key = os.getenv('PINECONE_API_KEY')
+    pc = Pinecone(api_key=pinecone_api_key)
+    index = pc.Index('index-1')
+
+    records = []
+    for i, emb in enumerate(embeddings):
+        meta = {"text": chunks_text[i]}
+
+        # Attach parent article metadata
+        if i < len(chunk_row_indices):
+            row = df.iloc[chunk_row_indices[i]]
+            for col in METADATA_COLS:
+                if col in df.columns and pd.notna(row.get(col)):
+                    meta[col.lower()] = str(row[col])
+
+        # Truncate text metadata if it exceeds Pinecone's 40KB limit
+        meta_bytes = len(json.dumps(meta).encode('utf-8'))
+        if meta_bytes > MAX_META_BYTES:
+            overflow = meta_bytes - MAX_META_BYTES + 100  # 100 byte safety margin
+            meta["text"] = meta["text"][:-overflow] + "..."
+            logger.warning("Truncated metadata for chunk-%d (was %d bytes)", i, meta_bytes)
+
+        records.append({"id": f"chunk-{i}", "values": emb, "metadata": meta})
+
+    total_batches = (len(records) + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
+
+    # Resume: read how many upsert batches were already completed
+    completed_batches = 0
+    if resume and os.path.exists(upsert_progress_path):
+        with open(upsert_progress_path, 'r') as f:
+            try:
+                completed_batches = int(f.read().strip())
+            except ValueError:
+                completed_batches = 0
+        logger.info("Resuming upsert from batch %d / %d", completed_batches, total_batches)
+
+    for batch_idx in range(completed_batches, total_batches):
+        start = batch_idx * UPSERT_BATCH_SIZE
+        end = min(start + UPSERT_BATCH_SIZE, len(records))
+        _upsert_batch_with_retry(index, records[start:end])
+
+        # Persist upsert progress after each batch
+        with open(upsert_progress_path, 'w') as f:
+            f.write(str(batch_idx + 1))
+
+        if (batch_idx + 1) % 50 == 0 or batch_idx == total_batches - 1:
+            logger.info("Upserted batch %d / %d  (%d vectors so far)",
+                        batch_idx + 1, total_batches, end)
+
+    logger.info("Upsert complete: %d vectors to Pinecone", len(records))
+    return index
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Embed and upsert Le Nouvelliste chunks")
+    parser.add_argument("--csv-path", default="dloc/data/output/le_nouvelliste.csv",
+                        help="Path to the input CSV")
+    parser.add_argument("--batch-size", type=int, default=EMBED_BATCH_SIZE,
+                        help=f"Embedding batch size (max {EMBED_BATCH_SIZE})")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from existing checkpoint file")
+    parser.add_argument("--checkpoint", default="embeddings_checkpoint.jsonl",
+                        help="Path to the JSONL checkpoint file")
+    args = parser.parse_args()
+
+    if args.batch_size > EMBED_BATCH_SIZE:
+        logger.warning("Batch size %d exceeds Bedrock limit of %d, clamping",
+                        args.batch_size, EMBED_BATCH_SIZE)
+        args.batch_size = EMBED_BATCH_SIZE
+
+    # 1. Load data
+    logger.info("Loading CSV: %s", args.csv_path)
+    df = pd.read_csv(args.csv_path)
+    logger.info("Loaded %d articles", len(df))
+
+    # 2. Chunk
+    chunks_text, chunk_row_indices = chunk_dataframe(df)
+
+    # 3. Embed in batches
+    embeddings = embed_all_chunks(chunks_text, args.batch_size, args.checkpoint, args.resume)
+
+    # 4. Upsert to Pinecone in batches
+    upsert_progress_path = args.checkpoint.replace('.jsonl', '_upsert_progress.txt')
+    index = upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
+                               upsert_progress_path, args.resume)
+
+    # 5. Report
+    stats = index.describe_index_stats()
+    logger.info("Pinecone index stats: %s", stats)
+
+
+if __name__ == "__main__":
+    main()

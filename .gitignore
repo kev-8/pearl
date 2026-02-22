@@ -1,4 +1,7 @@
 .DS_Store
-temp_embeddings.json
+temp_embeddings*.json
+embeddings_checkpoint*.jsonl
+*_upsert_progress.txt
+test_small.csv
 __pycache__/
 dloc/data/
