@@ -101,8 +101,16 @@ def normalize_embeddings(embeddings, expected_n=None):
 # Chunking
 # ---------------------------------------------------------------------------
 
-def chunk_dataframe(df):
-    """Split article_text into chunks and build chunk-to-row index mapping."""
+def chunk_dataframe(df, shuffle=False, seed=42):
+    """Split article_text into chunks and build chunk-to-row index mapping.
+
+    If shuffle=True, rows are randomly permuted (with a fixed seed) before
+    chunking so that the resulting chunks span all time periods evenly.
+    """
+    if shuffle:
+        df = df.sample(frac=1, random_state=seed).reset_index(drop=True)
+        logger.info("Shuffled DataFrame rows (seed=%d)", seed)
+
     texts_raw = df['article_text'].fillna("").astype(str).tolist()
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500, chunk_overlap=50, is_separator_regex=False
@@ -206,7 +214,8 @@ def _upsert_batch_with_retry(index, batch):
             time.sleep(delay)
 
 
-def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df, upsert_progress_path, resume):
+def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
+                       upsert_progress_path, resume, max_vectors=None):
     """Build records with metadata and upsert in batches of UPSERT_BATCH_SIZE."""
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
     pc = Pinecone(api_key=pinecone_api_key)
@@ -231,6 +240,11 @@ def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df, upsert_pr
             logger.warning("Truncated metadata for chunk-%d (was %d bytes)", i, meta_bytes)
 
         records.append({"id": f"chunk-{i}", "values": emb, "metadata": meta})
+
+    # Cap records to --max-vectors if specified
+    if max_vectors and max_vectors < len(records):
+        logger.info("Capping upsert to %d / %d vectors (--max-vectors)", max_vectors, len(records))
+        records = records[:max_vectors]
 
     total_batches = (len(records) + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
 
@@ -275,6 +289,12 @@ def main():
                         help="Resume from existing checkpoint file")
     parser.add_argument("--checkpoint", default="embeddings_checkpoint.jsonl",
                         help="Path to the JSONL checkpoint file")
+    parser.add_argument("--shuffle", action="store_true",
+                        help="Shuffle DataFrame rows before chunking for temporal diversity")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed for shuffle (default: 42)")
+    parser.add_argument("--max-vectors", type=int, default=None,
+                        help="Max vectors to upsert (cap for Pinecone Standard WU budget)")
     args = parser.parse_args()
 
     if args.batch_size > EMBED_BATCH_SIZE:
@@ -287,18 +307,24 @@ def main():
     df = pd.read_csv(args.csv_path)
     logger.info("Loaded %d articles", len(df))
 
-    # 2. Chunk
-    chunks_text, chunk_row_indices = chunk_dataframe(df)
+    # 2. Chunk (optionally shuffle for temporal diversity)
+    chunks_text, chunk_row_indices = chunk_dataframe(df, shuffle=args.shuffle, seed=args.seed)
 
-    # 3. Embed in batches
+    # 3. Cap chunks to max-vectors to avoid embedding more than we'll upsert
+    if args.max_vectors and args.max_vectors < len(chunks_text):
+        logger.info("Capping to %d / %d chunks (--max-vectors)", args.max_vectors, len(chunks_text))
+        chunks_text = chunks_text[:args.max_vectors]
+        chunk_row_indices = chunk_row_indices[:args.max_vectors]
+
+    # 4. Embed in batches
     embeddings = embed_all_chunks(chunks_text, args.batch_size, args.checkpoint, args.resume)
 
-    # 4. Upsert to Pinecone in batches
+    # 5. Upsert to Pinecone in batches
     upsert_progress_path = args.checkpoint.replace('.jsonl', '_upsert_progress.txt')
     index = upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
-                               upsert_progress_path, args.resume)
+                               upsert_progress_path, args.resume, args.max_vectors)
 
-    # 5. Report
+    # 6. Report
     stats = index.describe_index_stats()
     logger.info("Pinecone index stats: %s", stats)
 
