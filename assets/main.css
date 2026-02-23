@@ -1,93 +1,277 @@
-  
+/* ─── Reset & Base ─────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
 body {
-  background: #000;
-  text-align: center;
-  /* Photo by >Adrien Olichone on Unsplash 
-  background-image: url('/assets/black_sand.png') */
+  background: #080808;
+  background-image:
+    radial-gradient(ellipse at 50% -10%, #222 0%, #080808 55%);
+  min-height: 100vh;
+  font-family: 'Lato', sans-serif;
+  color: #f5f0e8;
 }
 
-/* Style all labels */
-label {
-  font-family: "Lato";
-  font-weight: bold;
-  font-size: 1.5em;
-  color: #d4b1aa; 
+/* Grain overlay for semi-gloss lacquer texture */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='grain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='200' height='200' filter='url(%23grain)' opacity='1'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 200px 200px;
 }
 
-.div-for-dropdown {
-  padding-top: 12px;
-  padding-bottom: 12px;
+/* Ensure page content sits above grain layer */
+body > * {
+  position: relative;
+  z-index: 1;
 }
 
-/* Change dropdown menu to be black */
-.Select-control, .Select-menu-outer, .Select-multi-value-wrapper, .select-up, .is-open .Select-control {
-  background-color: #000;
-  color: white;
-  font-family: "Lato";
+/* ─── Pearl Shimmer Animation ───────────────────────────────────── */
+
+@keyframes pearl-shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
 }
 
+@keyframes pearl-fadein {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 
-/* Code By Webdevtrick ( https://webdevtrick.com) */
-.shimmer {
-  font-family: "Lato";
-  font-weight: 300;
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%       { opacity: 0.70; }
+}
+
+.shimmer-title {
+  font-family: 'Playfair Display', serif;
   font-size: 6em;
-}
-.shimmer {
-  text-align: center;
-  color: rgba(255,255,255,0.1);
-  background: -webkit-gradient(linear, left top, right top, from(#222), to(#222), color-stop(0.5, #fff));
-  background: -moz-gradient(linear, left top, right top, from(#222), to(#222), color-stop(0.5, #fff));
-  background: gradient(linear, left top, right top, from(#222), to(#222), color-stop(0.5, #fff));
-  -webkit-background-size: 125px 100%;
-  -moz-background-size: 125px 100%;
-  background-size: 125px 100%;
+  letter-spacing: 0.08em;
+  background: linear-gradient(90deg,
+    #c8b8a2 0%,
+    #f5f0e8 20%,
+    #ffffff 35%,
+    #e8d5c0 50%,
+    #ffffff 65%,
+    #f5f0e8 80%,
+    #c8b8a2 100%
+  );
+  background-size: 200% auto;
   -webkit-background-clip: text;
-  -moz-background-clip: text;
   background-clip: text;
-  -webkit-animation-name: shimmer;
-  -moz-animation-name: shimmer;
-  animation-name: shimmer;
-  -webkit-animation-duration: 3s;
-  -moz-animation-duration: 3s;
-  animation-duration: 3s;
-  -webkit-animation-iteration-count: infinite;
-  -moz-animation-iteration-count: infinite;
-  animation-iteration-count: infinite;
-  background-repeat: no-repeat;
-  background-position: 0 0;
-  background-color: #222;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation:
+    pearl-shimmer 3s linear infinite,
+    pearl-fadein 0.7s ease both;
+  animation-delay: 0s, 0s;
+  display: inline-block;
 }
-@-moz-keyframes shimmer {
-  0% {
-    background-position: top left;
-  }
-  100% {
-    background-position: top right;
-  }
+
+/* ─── Layout Helpers ────────────────────────────────────────────── */
+
+.page-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  text-align: center;
+  gap: 2rem;
 }
-@-webkit-keyframes shimmer {
-  0% {
-    background-position: top left;
-  }
-  100% {
-    background-position: top right;
-  }
+
+.chat-page-wrapper {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 1.5rem 2rem;
 }
-@-o-keyframes shimmer {
-  0% {
-    background-position: top left;
-  }
-  100% {
-    background-position: top right;
-  }
+
+/* ─── Landing Page ──────────────────────────────────────────────── */
+
+.landing-description {
+  max-width: 620px;
+  font-size: 1.05em;
+  font-weight: 300;
+  line-height: 1.75;
+  opacity: 0.88;
+  color: #f5f0e8;
+  animation: pearl-fadein 0.7s ease 0.25s both;
 }
-@keyframes shimmer {
-  0% {
-    background-position: top left;
-  }
-  100% {
-    background-position: top right;
-  }
+
+.enter-btn {
+  display: inline-block;
+  padding: 0.6em 2.2em;
+  border: 1px solid rgba(245, 240, 232, 0.5);
+  color: #f5f0e8;
+  font-family: 'Lato', sans-serif;
+  font-size: 0.95em;
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  transition: border-color 0.25s ease, background 0.25s ease;
+  animation: pearl-fadein 0.7s ease 0.5s both;
+}
+
+.enter-btn:hover {
+  border-color: #c8b8a2;
+  background: rgba(200, 184, 162, 0.07);
+  color: #f5f0e8;
+  text-decoration: none;
+}
+
+/* ─── Input Page ────────────────────────────────────────────────── */
+
+.query-input-wrapper {
+  width: 100%;
+  max-width: 680px;
+  animation: pearl-fadein 0.7s ease 0.25s both;
+}
+
+/* Input page title reuses .shimmer-title — already animated via class */
+
+.query-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(245, 240, 232, 0.35);
+  color: #f5f0e8;
+  font-family: 'Lato', sans-serif;
+  font-size: 1.25em;
+  font-weight: 300;
+  text-align: center;
+  padding: 0.75em 0.5em;
+  outline: none !important;
+  transition: border-color 0.2s ease;
+}
+
+.query-input::placeholder {
+  color: rgba(245, 240, 232, 0.38);
+}
+
+.query-input:focus {
+  border-bottom-color: #c8b8a2;
+}
+
+/* ─── Chat Page ─────────────────────────────────────────────────── */
+
+.chat-top-bar {
+  display: flex;
+  align-items: center;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(245, 240, 232, 0.08);
+  flex-shrink: 0;
+}
+
+.pearl-static {
+  font-family: 'Playfair Display', serif;
+  font-size: 1.8em;
+  letter-spacing: 0.05em;
+  text-decoration: none;
+  background: linear-gradient(90deg, #c8b8a2 0%, #f5f0e8 40%, #e8d5c0 70%, #c8b8a2 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+.pearl-static:hover {
+  text-decoration: none;
+  opacity: 0.8;
+}
+
+.chat-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem 0;
+  padding-bottom: 110px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 920px;
+  width: 100%;
+  align-self: center;
+}
+
+/* Chat bubble base */
+.chat-bubble {
+  max-width: 80%;
+  padding: 0.85em 1.25em;
+  border-radius: 8px;
+  font-family: 'Lato', sans-serif;
+  font-size: 1.05em;
+  line-height: 1.7;
+  word-wrap: break-word;
+}
+
+/* User bubble — right-aligned */
+.chat-bubble-user {
+  align-self: flex-end;
+  background: rgba(200, 184, 162, 0.14);
+  color: #e8d5c0;
+  border-radius: 8px 8px 2px 8px;
+}
+
+/* Assistant bubble — left-aligned */
+.chat-bubble-assistant {
+  align-self: flex-start;
+  background: rgba(28, 28, 28, 0.7);
+  color: #d4c4b0;
+  border: 1px solid rgba(245, 240, 232, 0.06);
+  border-radius: 8px 8px 8px 2px;
+}
+
+/* Thinking placeholder pulse */
+.chat-bubble-thinking {
+  animation: thinking-pulse 2s ease-in-out infinite;
+}
+
+/* Fixed bottom input bar */
+.chat-input-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 1rem 2rem 1.75rem;
+  background: linear-gradient(to top, #080808 60%, transparent);
+  display: flex;
+  justify-content: center;
+}
+
+.chat-input {
+  width: 100%;
+  max-width: 920px;
+  background: rgba(28, 28, 28, 0.85);
+  border: 1px solid rgba(245, 240, 232, 0.15);
+  border-radius: 6px;
+  color: #f5f0e8;
+  font-family: 'Lato', sans-serif;
+  font-size: 1.05em;
+  font-weight: 300;
+  padding: 0.9em 1.25em;
+  outline: none !important;
+  transition: border-color 0.2s ease;
+}
+
+.chat-input::placeholder {
+  color: rgba(245, 240, 232, 0.35);
+}
+
+.chat-input:focus {
+  border-color: #c8b8a2;
 }

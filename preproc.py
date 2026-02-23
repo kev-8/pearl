@@ -20,7 +20,9 @@ EMBED_BATCH_SIZE = 96       # Bedrock Cohere Embed v4 limit
 UPSERT_BATCH_SIZE = 100     # Pinecone recommended batch size
 MAX_META_BYTES = 40_000     # Pinecone 40KB metadata limit per vector
 MAX_RETRIES = 3
-RETRY_BASE_DELAY = 1.0      # seconds, exponential backoff base
+RETRY_BASE_DELAY = 1.0           # seconds, exponential backoff base
+THROTTLE_RETRY_DELAY = 60.0      # seconds, delay for throttling/rate-limit errors
+THROTTLE_MAX_RETRIES = 10        # more attempts for throttling since it may clear
 
 
 # ---------------------------------------------------------------------------
@@ -134,22 +136,42 @@ def chunk_dataframe(df, shuffle=False, seed=42):
 # Batch embedding with checkpoint/resume
 # ---------------------------------------------------------------------------
 
+def _is_throttling_error(exc):
+    """Check if an exception is a Bedrock throttling / rate-limit error."""
+    exc_str = str(exc)
+    return "ThrottlingException" in exc_str or "Too many" in exc_str
+
+
 def _embed_batch_with_retry(texts):
-    """Embed a single batch of texts with exponential-backoff retry."""
+    """Embed a single batch of texts with exponential-backoff retry.
+
+    Uses longer delays and more attempts for throttling errors.
+    """
     body_dict = {"texts": texts, "input_type": "search_document"}
     body_bytes = json.dumps(body_dict, ensure_ascii=False).encode("utf-8")
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    max_attempts = MAX_RETRIES
+    for attempt in range(1, THROTTLE_MAX_RETRIES + 1):
         try:
             response_json = generate_text_embeddings(body_bytes)
             raw_emb = response_json.get('embeddings') or response_json.get('embedding')
             return normalize_embeddings(raw_emb, expected_n=len(texts))
         except (ClientError, Exception) as e:
-            if attempt == MAX_RETRIES:
-                logger.error("Embedding failed after %d retries: %s", MAX_RETRIES, e)
+            throttled = _is_throttling_error(e)
+            max_attempts = THROTTLE_MAX_RETRIES if throttled else MAX_RETRIES
+
+            if attempt >= max_attempts:
+                logger.error("Embedding failed after %d retries: %s", attempt, e)
                 raise
-            delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
-            logger.warning("Embed attempt %d failed (%s), retrying in %.1fs...", attempt, e, delay)
+
+            if throttled:
+                delay = THROTTLE_RETRY_DELAY * attempt  # 60s, 120s, 180s, ...
+                logger.warning("Throttled (attempt %d/%d), waiting %.0fs...",
+                               attempt, max_attempts, delay)
+            else:
+                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                logger.warning("Embed attempt %d failed (%s), retrying in %.1fs...",
+                               attempt, e, delay)
             time.sleep(delay)
 
 

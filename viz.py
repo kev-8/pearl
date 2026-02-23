@@ -1,27 +1,20 @@
-# load in libraries
 import dash
-from dash import Dash, html
-import dash_bootstrap_components as dbc
+from dash import Dash, html, dcc
 
-# from dash.dependencies import Input, Output
-# import plotly.express as px
+app = Dash(
+    __name__,
+    use_pages=True,
+    suppress_callback_exceptions=True,
+    external_stylesheets=[
+        "https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Lato:wght@300;400&display=swap"
+    ],
+)
 
-
-# Elements to include:
-
-# world map
-# country dropdown menu
-# timeframe dropdown menu
-# ner
-# sentiment analysis
-# topic modeling
-# global regional analysis
-
-
-app = Dash(__name__, use_pages=True, external_stylesheets=[dbc.themes.CYBORG])
-
-
-app.layout = html.Div([dash.page_container])
+app.layout = html.Div([
+    dcc.Store(id='initial-query', storage_type='session'),
+    dcc.Store(id='thread-id', storage_type='session'),
+    dash.page_container,
+])
 
 if __name__ == "__main__":
-    app.run_server(debug=True)
+    app.run(debug=True)
