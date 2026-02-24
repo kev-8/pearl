@@ -11,21 +11,25 @@ PLACEHOLDERS = [
 ]
 
 layout = html.Div(
-    className='page-center',
+    className='page-center query-page',
     children=[
         dcc.Interval(id='placeholder-interval', interval=3000, n_intervals=0),
-        html.H1('pearl', className='shimmer-title'),
+        html.H1('pearl', className='pearl-text'),
         html.Div(
             className='query-input-wrapper',
             children=[
-                dcc.Input(
-                    id='query-input',
-                    type='text',
-                    n_submit=0,
-                    autoFocus=True,
-                    placeholder=PLACEHOLDERS[0],
-                    className='query-input',
-                    debounce=False,
+                html.Div(
+                    className='query-input-box',
+                    children=[
+                        dcc.Input(
+                            id='query-input',
+                            type='text',
+                            n_submit=0,
+                            placeholder=PLACEHOLDERS[0],
+                            className='query-input',
+                            debounce=False,
+                        ),
+                    ],
                 ),
             ],
         ),

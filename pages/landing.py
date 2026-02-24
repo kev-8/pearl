@@ -1,18 +1,18 @@
 import dash
-from dash import html
+from dash import html, dcc
 
 dash.register_page(__name__, path='/', title='pearl')
 
 layout = html.Div(
-    className='page-center',
+    className='page-center landing-page',
     children=[
-        html.H1('pearl', className='shimmer-title'),
+        html.H1('pearl', className='pearl-text'),
         html.P(
-            "In this day and age, most of the news that comes out about Haiti is negative. "
-            "This consistent stream of negative media skews perception of the country. "
-            "This tool was created to uplift history and positive news about Haiti and show "
-            "the world what a beautiful country it truly is. The name pearl comes from Haiti's "
-            "nickname: Pearl of the Antilles.",
+            "Haiti's story is too often told through headlines alone. "
+            "This constant stream of negative coverage shapes how the world sees the country, "
+            "and misses so much of what makes it extraordinary. Pearl was created to change that: "
+            "to celebrate Haiti's rich history, its resilient people, and its vibrant culture. "
+            "The name is a nod to Haiti's nickname, the Pearl of the Antilles.",
             className='landing-description',
         ),
         html.A('Enter', href='/query', className='enter-btn'),

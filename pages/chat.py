@@ -5,8 +5,6 @@ from modeling import conversational_agent
 
 dash.register_page(__name__, path='/chat', title='pearl')
 
-THINKING_PHRASES = ['Thinking...', 'Ap panse...', 'Pensee...']
-
 layout = html.Div(
     className='chat-page-wrapper',
     children=[
@@ -24,21 +22,22 @@ layout = html.Div(
         dcc.Store(id='pending-query', data=None),
         # One-shot interval — fires initial load after mount
         dcc.Interval(id='init-trigger', interval=300, max_intervals=1, n_intervals=0),
-        # Thinking rotation interval — enabled only while awaiting response
-        dcc.Interval(id='thinking-interval', interval=1200, disabled=True, n_intervals=0),
-        # Dummy output target for clientside thinking rotator
-        html.Div(id='thinking-dummy', style={'display': 'none'}),
         # Fixed bottom input bar
         html.Div(
             className='chat-input-bar',
             children=[
-                dcc.Input(
-                    id='chat-input',
-                    type='text',
-                    n_submit=0,
-                    placeholder='Ask a follow-up…',
-                    className='chat-input',
-                    debounce=False,
+                html.Div(
+                    className='chat-input-box',
+                    children=[
+                        dcc.Input(
+                            id='chat-input',
+                            type='text',
+                            n_submit=0,
+                            placeholder='Ask a follow-up…',
+                            className='chat-input',
+                            debounce=False,
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -57,14 +56,18 @@ def render_messages(history):
     return bubbles
 
 
+def _thinking_dots():
+    return html.Div(
+        [html.Span(className='dot'), html.Span(className='dot'), html.Span(className='dot')],
+        className='chat-bubble chat-bubble-assistant chat-bubble-thinking',
+    )
+
+
 def _thinking_state(history, query):
-    """Render history + user bubble + thinking placeholder."""
+    """Render history + user bubble + animated dots placeholder."""
     bubbles = render_messages(history)
     bubbles.append(html.Div(query, className='chat-bubble chat-bubble-user'))
-    bubbles.append(html.Div(
-        THINKING_PHRASES[0],
-        className='chat-bubble chat-bubble-assistant chat-bubble-thinking',
-    ))
+    bubbles.append(_thinking_dots())
     return bubbles
 
 
@@ -81,7 +84,6 @@ def _invoke(query, thread_id):
 @callback(
     Output('chat-messages', 'children'),
     Output('pending-query', 'data'),
-    Output('thinking-interval', 'disabled'),
     Input('init-trigger', 'n_intervals'),
     State('initial-query', 'data'),
     State('conversation-history', 'data'),
@@ -89,8 +91,8 @@ def _invoke(query, thread_id):
 )
 def initial_show(n_intervals, initial_query, history):
     if history or not initial_query:
-        return render_messages(history or []), no_update, no_update
-    return _thinking_state([], initial_query), initial_query, False
+        return render_messages(history or []), no_update
+    return _thinking_state([], initial_query), initial_query
 
 
 # ── Callback 2: show thinking state immediately on follow-up submit ───────────
@@ -99,7 +101,6 @@ def initial_show(n_intervals, initial_query, history):
     Output('chat-messages', 'children', allow_duplicate=True),
     Output('chat-input', 'value'),
     Output('pending-query', 'data', allow_duplicate=True),
-    Output('thinking-interval', 'disabled', allow_duplicate=True),
     Input('chat-input', 'n_submit'),
     State('chat-input', 'value'),
     State('conversation-history', 'data'),
@@ -107,9 +108,9 @@ def initial_show(n_intervals, initial_query, history):
 )
 def submit_show(n_submit, value, history):
     if not value or not value.strip():
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
     query = value.strip()
-    return _thinking_state(history or [], query), '', query, False
+    return _thinking_state(history or [], query), '', query
 
 
 # ── Callback 3: invoke model once pending-query is set ────────────────────────
@@ -118,7 +119,6 @@ def submit_show(n_submit, value, history):
     Output('conversation-history', 'data'),
     Output('chat-messages', 'children', allow_duplicate=True),
     Output('pending-query', 'data', allow_duplicate=True),
-    Output('thinking-interval', 'disabled', allow_duplicate=True),
     Input('pending-query', 'data'),
     State('thread-id', 'data'),
     State('conversation-history', 'data'),
@@ -126,31 +126,14 @@ def submit_show(n_submit, value, history):
 )
 def process_query(pending_query, thread_id, history):
     if not pending_query:
-        return no_update, no_update, no_update, no_update
+        return no_update, no_update, no_update
 
     answer = _invoke(pending_query, thread_id)
     history = list(history or [])
     history.append({'role': 'user',      'content': pending_query})
     history.append({'role': 'assistant', 'content': answer})
-    return history, render_messages(history), None, True
+    return history, render_messages(history), None
 
-
-# ── Clientside: rotate thinking phrase while waiting ──────────────────────────
-
-clientside_callback(
-    """
-    function(n_intervals, pending_query) {
-        if (!pending_query) return window.dash_clientside.no_update;
-        var phrases = ['Thinking...', 'Ap panse...', 'Pensee...'];
-        var el = document.querySelector('.chat-bubble-thinking');
-        if (el) { el.textContent = phrases[n_intervals % 3]; }
-        return window.dash_clientside.no_update;
-    }
-    """,
-    Output('thinking-dummy', 'children'),
-    Input('thinking-interval', 'n_intervals'),
-    State('pending-query', 'data'),
-)
 
 # ── Clientside: scroll to bottom on any message update ───────────────────────
 
