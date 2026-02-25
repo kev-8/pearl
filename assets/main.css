@@ -164,14 +164,14 @@ body > * {
 .landing-page::before {
   content: '';
   position: absolute;
-  inset: -10%;                                                                                                                                      
-  background-image: url('/assets/black_sand.png');   
-  /* inset: 0;
-  background-image: url('/assets/black_waves.gif'); */
+  /* inset: -10%;                                                                                                                                      
+  background-image: url('/assets/black_sand.png');    */
+  inset: 0;
+  background-image: url('/assets/black_waves.gif');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  animation: ken-burns 14s ease-in-out infinite;                                                                                                    
+  /* animation: ken-burns 14s ease-in-out infinite;                                                                                                     */
   z-index: 0;
 }
 
@@ -183,7 +183,7 @@ body > * {
 .landing-description {
   max-width: 620px;
   font-family: 'Lato', sans-serif;
-  font-size: 1.05em;
+  font-size: 1.25em;
   font-weight: 300;
   font-style: italic;
   line-height: 1.75;
@@ -198,7 +198,7 @@ body > * {
   border: 2px solid #f5f0e8;
   color: #f5f0e8;
   font-family: 'Lato', sans-serif;
-  font-size: 1.05em;
+  font-size: 1.25em;
   font-weight: 300;
   font-style: italic;
   letter-spacing: normal;
@@ -254,8 +254,11 @@ body > * {
   appearance: none;
 }
 
-.query-input::placeholder {
-  color: rgba(245, 240, 232, 0.38);
+.query-input::placeholder,
+.query-input::-webkit-input-placeholder,
+.query-input::-moz-placeholder {
+  color: rgba(245, 240, 232, 0.38) !important;
+  font-style: italic !important;
 }
 
 .query-input:focus,
@@ -285,6 +288,7 @@ body > * {
   text-decoration: none;
   background: linear-gradient(90deg, #f5f0e8 0%, #d4b1aa 100%);
   background-size: 100% auto;
+  background-clip: text;
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   filter: brightness(2);
