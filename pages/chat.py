@@ -51,8 +51,16 @@ def render_messages(history):
     for msg in history:
         role = msg.get('role', 'assistant')
         content = msg.get('content', '')
-        css = 'chat-bubble chat-bubble-user' if role == 'user' else 'chat-bubble chat-bubble-assistant'
-        bubbles.append(html.Div(content, className=css))
+        if role == 'user':
+            bubbles.append(html.Div(content, className='chat-bubble chat-bubble-user'))
+        else:
+            bubbles.append(
+                dcc.Markdown(
+                    content,
+                    className='chat-bubble chat-bubble-assistant',
+                    link_target='_blank',
+                )
+            )
     return bubbles
 
 
