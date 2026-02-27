@@ -16,5 +16,7 @@ app.layout = html.Div([
     dash.page_container,
 ])
 
+server = app.server  # exposes the underlying Flask server for gunicorn
+
 if __name__ == "__main__":
     app.run(debug=True)

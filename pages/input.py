@@ -14,7 +14,7 @@ layout = html.Div(
     className='page-center query-page',
     children=[
         dcc.Interval(id='placeholder-interval', interval=3000, n_intervals=0),
-        html.H1('pearl', className='pearl-text'),
+        html.Div(html.H1('pearl', className='pearl-text'), className='pearl-text-wrapper'),
         html.Div(
             className='query-input-wrapper',
             children=[

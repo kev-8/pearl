@@ -10,7 +10,8 @@ import operator
 from typing import Annotated, Literal, TypedDict
 from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_aws import ChatBedrockConverse
+from langchain_anthropic import ChatAnthropic
+# from langchain_aws import ChatBedrockConverse
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 from langgraph.checkpoint.memory import InMemorySaver
@@ -101,8 +102,8 @@ def search_web(query: str) -> dict:
     search_results = DDGS().text(query, max_results=5)
     return search_results
 
-# using haiku for testng 
-model = ChatBedrockConverse(model="anthropic.claude-3-haiku-20240307-v1:0")
+model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+# model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
 retriever_agent = create_agent(
     model=model,
@@ -127,7 +128,8 @@ web_search_agent = create_agent(
     ),
 )
 
-router_model = ChatBedrockConverse(model="anthropic.claude-3-haiku-20240307-v1:0")
+router_model = ChatAnthropic(model="claude-haiku-4-5-20251001")
+# router_model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
 # Define structured output schema for the classifier
 class ClassificationResult(BaseModel):  
