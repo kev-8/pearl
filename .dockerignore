@@ -1,0 +1,17 @@
+# Large data files
+dloc/data/
+embeddings_checkpoint.jsonl
+temp_embeddings.json
+archive/
+
+# Eval
+eval.py
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Dev / local
+.env
+*.md
