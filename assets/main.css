@@ -461,4 +461,64 @@ body > * {
 .chat-bubble-assistant a { color: #fde8c8; text-decoration: underline; }
 .chat-bubble-assistant code { font-family: monospace; font-size: 0.9em; opacity: 0.8; }
 .chat-bubble-assistant hr { border: none; border-top: 1px solid rgba(253,232,200,0.15); margin: 0.8em 0; }
-  
+
+/* ─── Mobile (≤ 600px) ──────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+
+  /* Landing — scale down title and description */
+  .pearl-text { font-size: 3.8em; }
+  .landing-description { font-size: 1.05em; padding: 0 1rem; }
+  .enter-btn { font-size: 1.05em; padding: 0.55em 1.8em; }
+  .page-center { gap: 1.5rem; }
+  .landing-page { padding-bottom: 10vh; }
+  .info-container { bottom: 1.25rem; }
+
+  /* Input page */
+  .query-page { padding-bottom: 20vh; }
+  .query-input-wrapper { padding: 0 1rem; }
+  .query-input { font-size: 1.05em; }
+
+  /* Chat page wrapper — tighter horizontal padding */
+  .chat-page-wrapper { padding: 1rem; }
+
+  /* Top bar wordmark */
+  .pearl-static { font-size: 1.7em; }
+
+  /* Message area — more bottom clearance for keyboard + input bar */
+  .chat-container {
+    padding-bottom: 130px;
+    gap: 0.75rem;
+  }
+
+  /* Bubbles — allow more width on small screens */
+  .chat-bubble {
+    max-width: 92%;
+    font-size: 0.97em;
+    padding: 0.75em 1em;
+  }
+
+  /* Input bar — tighter padding, account for iOS home indicator */
+  .chat-input-bar {
+    padding: 0.75rem 1rem 1.25rem;
+    /* env() pushes bar above iOS home indicator when supported */
+    padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+  }
+
+  .chat-input { font-size: 1em; padding: 0.8em 1em; }
+
+  /* Prevent iOS Safari from zooming in on input focus (font-size must be ≥ 16px) */
+  .chat-input,
+  .query-input { font-size: max(1em, 16px); }
+}
+
+/* ─── Small tablet (601px – 900px) ──────────────────────────────── */
+
+@media (min-width: 601px) and (max-width: 900px) {
+  .pearl-text { font-size: 4.5em; }
+  .chat-page-wrapper { padding: 1.25rem 1.5rem; }
+  .pearl-static { font-size: 1.9em; }
+  .chat-container { padding-bottom: 120px; }
+  .chat-bubble { max-width: 88%; }
+  .chat-input-bar { padding: 0.85rem 1.5rem 1.5rem; }
+}
