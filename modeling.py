@@ -1,8 +1,10 @@
+import threading
 import pandas as pd
 import numpy as np
 import logging
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pinecone import Pinecone
 from ddgs import DDGS
 from botocore.exceptions import ClientError
@@ -26,6 +28,9 @@ logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 _pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
 _index = _pc.Index('index-1')
 
+# Streaming buffers keyed by session buffer_id
+_stream_buffers: dict[str, dict] = {}
+
 
 class AgentInput(TypedDict):
     """Simple input state for each subagent."""
@@ -47,7 +52,7 @@ class Classification(TypedDict):
 class RouterState(TypedDict):
     query: str
     classifications: list[Classification]
-    results: Annotated[list[AgentOutput], operator.add]  
+    results: Annotated[list[AgentOutput], operator.add]
     final_answer: str
 
 @tool
@@ -73,7 +78,7 @@ def search_pinecone(query: str) -> str:
     results = _index.query(
         namespace='__default__',
         vector=embeddings[0],
-        top_k=6,
+        top_k=3,
         include_metadata=True
     )
 
@@ -102,61 +107,77 @@ def search_web(query: str) -> dict:
     search_results = DDGS().text(query, max_results=5)
     return search_results
 
-model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+# model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
 # model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
-retriever_agent = create_agent(
-    model=model,
-    tools=[search_pinecone],
-    name='retriever_agent',
-    system_prompt=(
-        "You are a specialist in the Le Nouvelliste archive — a Haitian newspaper published continuously since 1898, "
-        "written primarily in French and Haitian Creole. Your job is to search the archive and extract relevant "
-        "historical facts. Always cite the article date and source URL from the metadata. Organize your findings "
-        "clearly, noting the time period and context."
-    ),
-)
+# retriever_agent = create_agent(
+#     model=model,
+#     tools=[search_pinecone],
+#     name='retriever_agent',
+#     system_prompt=(
+#         "You are a specialist in the Le Nouvelliste archive — a Haitian newspaper published continuously since 1898, "
+#         "written primarily in French and Haitian Creole. Your job is to search the archive and extract relevant "
+#         "historical facts. Always cite the article date and source URL from the metadata. Organize your findings "
+#         "clearly, noting the time period and context."
+#     ),
+# )
 
-web_search_agent = create_agent(
-    model=model,
-    tools=[search_web],
-    name='web_search_agent',
-    system_prompt=(
-        "You are searching for supplementary and current information about Haiti to complement a historical archive. "
-        "Prioritize credible, authoritative sources (academic institutions, reputable journalism, government and NGO reports). "
-        "Always cite the source URL for every claim. Organize results clearly."
-    ),
-)
+# web_search_agent = create_agent(
+#     model=model,
+#     tools=[search_web],
+#     name='web_search_agent',
+#     system_prompt=(
+#         "You are searching for supplementary and current information about Haiti to complement a historical archive. "
+#         "Prioritize credible, authoritative sources (academic institutions, reputable journalism, government and NGO reports). "
+#         "Always cite the source URL for every claim. Organize results clearly."
+#     ),
+# )
 
 router_model = ChatAnthropic(model="claude-haiku-4-5-20251001")
+synthesis_model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
 # router_model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
 # Define structured output schema for the classifier
-class ClassificationResult(BaseModel):  
+class ClassificationResult(BaseModel):
     """Result of classifying a user query into agent-specific sub-questions."""
     classifications: list[Classification] = Field(
         description="List of agents to invoke with their targeted sub-questions"
     )
 
+_CLASSIFY_PROMPT = (
+    "You route user questions about Haiti to the right knowledge sources:\n"
+    "- `pinecone_search`: historical information from Le Nouvelliste, Haiti's oldest newspaper "
+    "(articles from ~1900 to present). Use for Haitian history, culture, politics, economics, "
+    "social events, named figures, and places documented in the archive.\n"
+    "- `web_search`: current events, recent context, or topics unlikely to appear in historical "
+    "newspaper archives (e.g., post-2020 events, technical/scientific topics, comparative context).\n"
+    "For each relevant source, write a targeted sub-question optimized for that source's strengths. "
+    "Only return sources that are genuinely relevant."
+)
 
-def classify_query(state: RouterState) -> dict:
+_SYNTHESIS_PROMPT = (
+    "You are synthesizing research about Haiti from multiple sources to answer the user's question. "
+    "Write a clear, well-structured response in markdown. Use the following format:\n"
+    "- A brief direct answer to the question (1-2 sentences)\n"
+    "- Organized sections with headers if multiple aspects are covered\n"
+    "- Bullet points for lists of facts, events, or entities\n"
+    "- Source citations inline (e.g., *Le Nouvelliste, 1947-03-12* or [Source](url))\n"
+    "- A \"Historical Context\" section when archival data provides meaningful background\n"
+    "Avoid redundancy. Note discrepancies between sources if relevant. "
+    "Keep the response focused and readable."
+)
+
+
+def classify_query(state: RouterState, history_str: str = "") -> dict:
     """Classify query and determine which agents to invoke."""
-    structured_llm = router_model.with_structured_output(ClassificationResult)  
+    structured_llm = router_model.with_structured_output(ClassificationResult)
+
+    system = _CLASSIFY_PROMPT
+    if history_str:
+        system += f"\n\nRecent conversation (for resolving follow-up references):\n{history_str}"
 
     result = structured_llm.invoke([
-        {
-            "role": "system",
-            "content": (
-                "You route user questions about Haiti to the right knowledge sources:\n"
-                "- `pinecone_search`: historical information from Le Nouvelliste, Haiti's oldest newspaper "
-                "(articles from ~1900 to present). Use for Haitian history, culture, politics, economics, "
-                "social events, named figures, and places documented in the archive.\n"
-                "- `web_search`: current events, recent context, or topics unlikely to appear in historical "
-                "newspaper archives (e.g., post-2020 events, technical/scientific topics, comparative context).\n"
-                "For each relevant source, write a targeted sub-question optimized for that source's strengths. "
-                "Only return sources that are genuinely relevant."
-            ),
-        },
+        {"role": "system", "content": system},
         {"role": "user", "content": state["query"]}
     ])
 
@@ -166,117 +187,140 @@ def classify_query(state: RouterState) -> dict:
 def route_to_agents(state: RouterState) -> list[Send]:
     """Fan out to agents based on classifications."""
     return [
-        Send(c["source"], {"query": c["query"]})  
+        Send(c["source"], {"query": c["query"]})
         for c in state["classifications"]
     ]
 
 
-def query_pinecone(state: AgentInput) -> dict:
-    """Query the Pinecone vector database agent."""
-    result = retriever_agent.invoke({
-        "messages": [{"role": "user", "content": state["query"]}]
-    })
-    return {"results": [{"source": "pinecone_search", "result": result["messages"][-1].content}]}
+# def query_pinecone(state: AgentInput) -> dict:
+#     result = retriever_agent.invoke({"messages": [{"role": "user", "content": state["query"]}]})
+#     return {"results": [{"source": "pinecone_search", "result": result["messages"][-1].content}]}
+
+# def query_web_search(state: AgentInput) -> dict:
+#     result = web_search_agent.invoke({"messages": [{"role": "user", "content": state["query"]}]})
+#     return {"results": [{"source": "web_search", "result": result["messages"][-1].content}]}
 
 
-def query_web_search(state: AgentInput) -> dict:
-    """Query the web search engine agent."""
-    result = web_search_agent.invoke({
-        "messages": [{"role": "user", "content": state["query"]}]
-    })
-    return {"results": [{"source": "web_search", "result": result["messages"][-1].content}]}
+# ── Streaming pipeline ────────────────────────────────────────────────────────
+
+def _format_history(history: list[dict], max_turns: int = 4) -> str:
+    """Format the last N messages as a plain-text context string."""
+    if not history:
+        return ""
+    recent = history[-(max_turns * 2):]
+    return "\n".join(
+        f"{'User' if m['role'] == 'user' else 'Pearl'}: {m['content'][:400]}"
+        for m in recent
+    )
 
 
-def has_conflicting_results(results: list[AgentOutput]) -> bool:
-    """Check if results from different sources contain conflicting information."""
-    if len(results) <= 1:
-        return False
-    
-    # Multiple sources means potential conflicts requiring synthesis
-    sources = [r['source'] for r in results]
-    return len(set(sources)) > 1
+def _run_source(classification: Classification) -> list[AgentOutput]:
+    """Call the tool directly — no LLM agent wrapper."""
+    if classification["source"] == "pinecone_search":
+        result = search_pinecone.invoke({"query": classification["query"]})
+        return [{"source": "pinecone_search", "result": result}]
+    result = search_web.invoke({"query": classification["query"]})
+    return [{"source": "web_search", "result": str(result)}]
 
 
-def synthesize_results(state: RouterState) -> dict:
-    """Combine results from all agents into a coherent answer."""
-    if not state["results"]:
-        return {"final_answer": "No results found from any knowledge source."}
+def _stream_query(query: str, history: list[dict], buffer_id: str) -> None:
+    """
+    Run the full pipeline and write streamed chunks to _stream_buffers[buffer_id].
+    Intended to be called in a background thread via start_stream().
+    """
+    try:
+        history_str = _format_history(history)
 
-    # If single source or no conflicts, return directly without synthesis
-    if not has_conflicting_results(state["results"]):
-        return {"final_answer": state["results"][0]["result"]}
+        # 1. Classify — history-aware so follow-ups resolve correctly
+        classified = classify_query({"query": query, "classifications": [], "results": [], "final_answer": ""}, history_str)
+        classifications = classified.get("classifications", [])
 
-    # Format results for synthesis only when needed
-    formatted = [
-        f"**From {r['source'].title()}:**\n{r['result']}"
-        for r in state["results"]
-    ]
+        if not classifications:
+            _stream_buffers[buffer_id]["text"] = "I wasn't sure how to search for that — could you rephrase?"
+            return
 
-    synthesis_response = router_model.invoke([
-        {
-            "role": "system",
-            "content": (
-                "You are synthesizing research about Haiti from multiple sources to answer the user's question. "
-                "Write a clear, well-structured response in markdown. Use the following format:\n"
-                "- A brief direct answer to the question (1-2 sentences)\n"
-                "- Organized sections with headers if multiple aspects are covered\n"
-                "- Bullet points for lists of facts, events, or entities\n"
-                "- Source citations inline (e.g., *Le Nouvelliste, 1947-03-12* or [Source](url))\n"
-                "- A \"Historical Context\" section when archival data provides meaningful background\n"
-                "Avoid redundancy. Note discrepancies between sources if relevant. "
-                "Keep the response focused and readable."
-            ),
-        },
-        {"role": "user", "content": f'Question: {state["query"]}\n\n' + "\n\n".join(formatted)}
-    ])
+        # 2. Fan-out retrieval in parallel (mirrors original LangGraph Send behaviour)
+        results: list[AgentOutput] = []
+        with ThreadPoolExecutor(max_workers=len(classifications)) as executor:
+            futures = [executor.submit(_run_source, c) for c in classifications]
+            for future in as_completed(futures):
+                results.extend(future.result())
 
-    return {"final_answer": synthesis_response.content}
+        if not results:
+            _stream_buffers[buffer_id]["text"] = "No results found from any knowledge source."
+            return
 
-# Define the overall workflow
-workflow = (
-    StateGraph(RouterState)
-    .add_node("classify", classify_query)
-    .add_node("pinecone_search", query_pinecone)
-    .add_node("web_search", query_web_search)
-    .add_node("synthesize", synthesize_results)
-    .add_edge(START, "classify")
-    .add_conditional_edges("classify", route_to_agents, ["pinecone_search", "web_search"])
-    .add_edge("pinecone_search", "synthesize")
-    .add_edge("web_search", "synthesize")
-    .add_edge("synthesize", END)
-    .compile()
-)
+        # 3. Stream synthesis — always run through Haiku so history context
+        #    is injected and output is consistently formatted markdown.
+        formatted_results = "\n\n".join(
+            f"**From {r['source'].title()}:**\n{r['result']}" for r in results
+        )
 
+        system = _SYNTHESIS_PROMPT
+        if history_str:
+            system += f"\n\nConversation context (use for continuity and pronoun resolution):\n{history_str}"
 
-# state tracking so the agent can engage in multi-turn conversations
-@tool
-def search_knowledge_sources(query: str) -> str:
-    """Search both Pinecone and web sources and return combined results to answer the query."""
-    answer = workflow.invoke({"query": query})
-    return answer["final_answer"]
+        for chunk in synthesis_model.stream([
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Question: {query}\n\n{formatted_results}"},
+        ]):
+            if chunk.content:
+                _stream_buffers[buffer_id]["text"] += chunk.content
 
-conversational_agent = create_agent(
-    model=model,
-    tools=[search_knowledge_sources],
-    system_prompt=(
-        "You are Pearl, an AI research assistant specialized in Haitian history and culture, powered by the "
-        "Le Nouvelliste archive — Haiti's oldest newspaper, published since 1898 — and live web search. "
-        "You can answer questions in English, French, and Haitian Creole. "
-        "Use the `search_knowledge_sources` tool for every substantive question. "
-        "Synthesize historical archive results with contemporary context when relevant. "
-        "Be precise about dates and sources. When the user's question is ambiguous, ask for clarification before searching."
-    ),
-    checkpointer=InMemorySaver()
-)
-
-# if __name__ == "__main__":
-#     query = 'Tell me more about the other significant industries.'
-
-#     config = {"configurable": {"thread_id": "thread-1"}}
-#     answer = conversational_agent.invoke(
-#         {"messages": [{"role": "user", "content": query}]},
-#         config=config)
-
-#     print("\nFinal Answer:\n", answer["messages"][-1].content)
+    except Exception as err:
+        logger.error("Streaming error: %s", err)
+        _stream_buffers[buffer_id]["text"] = "An error occurred while processing your request."
+    finally:
+        _stream_buffers[buffer_id]["done"] = True
 
 
+def start_stream(query: str, history: list[dict], buffer_id: str) -> None:
+    """Initialise the stream buffer and launch _stream_query in a daemon thread."""
+    _stream_buffers[buffer_id] = {"text": "", "done": False}
+    threading.Thread(
+        target=_stream_query,
+        args=(query, history, buffer_id),
+        daemon=True,
+    ).start()
+
+
+def get_stream_state(buffer_id: str) -> tuple[str, bool]:
+    """Return (accumulated_text, is_done) for the given buffer."""
+    buf = _stream_buffers.get(buffer_id, {"text": "", "done": True})
+    return buf["text"], buf["done"]
+
+
+# ── Legacy workflow (kept for reference) ─────────────────────────────────────
+
+# workflow = (
+#     StateGraph(RouterState)
+#     .add_node("classify", classify_query)
+#     .add_node("pinecone_search", query_pinecone)
+#     .add_node("web_search", query_web_search)
+#     .add_node("synthesize", synthesize_results)
+#     .add_edge(START, "classify")
+#     .add_conditional_edges("classify", route_to_agents, ["pinecone_search", "web_search"])
+#     .add_edge("pinecone_search", "synthesize")
+#     .add_edge("web_search", "synthesize")
+#     .add_edge("synthesize", END)
+#     .compile()
+# )
+
+# @tool
+# def search_knowledge_sources(query: str) -> str:
+#     answer = workflow.invoke({"query": query})
+#     return answer["final_answer"]
+
+# conversational_agent = create_agent(
+#     model=model,
+#     tools=[search_knowledge_sources],
+#     system_prompt=(
+#         "You are Pearl, an AI research assistant specialized in Haitian history and culture, powered by the "
+#         "Le Nouvelliste archive — Haiti's oldest newspaper, published since 1898 — and live web search. "
+#         "You can answer questions in English, French, and Haitian Creole. "
+#         "Use the `search_knowledge_sources` tool for every substantive question. "
+#         "Synthesize historical archive results with contemporary context when relevant. "
+#         "Be precise about dates and sources. When the user's question is ambiguous, ask for clarification before searching."
+#     ),
+#     checkpointer=InMemorySaver()
+# )

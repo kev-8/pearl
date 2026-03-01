@@ -1,7 +1,7 @@
 import dash
 from dash import html, dcc, Input, Output, State, callback, clientside_callback, no_update
 
-from modeling import conversational_agent
+from modeling import start_stream, get_stream_state
 
 dash.register_page(__name__, path='/chat', title='pearl')
 
@@ -22,6 +22,8 @@ layout = html.Div(
         dcc.Store(id='pending-query', data=None),
         # One-shot interval — fires initial load after mount
         dcc.Interval(id='init-trigger', interval=300, max_intervals=1, n_intervals=0),
+        # Streaming poll interval — enabled while a query is in flight
+        dcc.Interval(id='stream-interval', interval=100, disabled=True, max_intervals=-1),
         # Fixed bottom input bar
         html.Div(
             className='chat-input-bar',
@@ -79,14 +81,6 @@ def _thinking_state(history, query):
     return bubbles
 
 
-def _invoke(query, thread_id):
-    result = conversational_agent.invoke(
-        {"messages": [{"role": "user", "content": query}]},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    return result["messages"][-1].content
-
-
 # ── Callback 1: show thinking state immediately on page load ──────────────────
 
 @callback(
@@ -121,26 +115,64 @@ def submit_show(n_submit, value, history):
     return _thinking_state(history or [], query), '', query
 
 
-# ── Callback 3: invoke model once pending-query is set ────────────────────────
+# ── Callback 3: kick off background stream when pending-query is set ──────────
 
 @callback(
-    Output('conversation-history', 'data'),
-    Output('chat-messages', 'children', allow_duplicate=True),
-    Output('pending-query', 'data', allow_duplicate=True),
+    Output('stream-interval', 'disabled'),
     Input('pending-query', 'data'),
     State('thread-id', 'data'),
     State('conversation-history', 'data'),
     prevent_initial_call=True,
 )
-def process_query(pending_query, thread_id, history):
+def start_query_stream(pending_query, thread_id, history):
     if not pending_query:
-        return no_update, no_update, no_update
+        return True  # nothing to do — keep interval disabled
+    start_stream(pending_query, history or [], thread_id or 'default')
+    return False  # enable polling
 
-    answer = _invoke(pending_query, thread_id)
-    history = list(history or [])
-    history.append({'role': 'user',      'content': pending_query})
-    history.append({'role': 'assistant', 'content': answer})
-    return history, render_messages(history), None
+
+# ── Callback 4: poll stream buffer and update display ─────────────────────────
+
+@callback(
+    Output('conversation-history', 'data'),
+    Output('chat-messages', 'children', allow_duplicate=True),
+    Output('pending-query', 'data', allow_duplicate=True),
+    Output('stream-interval', 'disabled', allow_duplicate=True),
+    Input('stream-interval', 'n_intervals'),
+    State('pending-query', 'data'),
+    State('thread-id', 'data'),
+    State('conversation-history', 'data'),
+    prevent_initial_call=True,
+)
+def poll_stream(n_intervals, pending_query, thread_id, history):
+    if not pending_query:
+        return no_update, no_update, no_update, True
+
+    text, done = get_stream_state(thread_id or 'default')
+    history_list = list(history or [])
+
+    if done:
+        # Finalise: persist to history, clear pending, disable interval
+        final_history = history_list + [
+            {'role': 'user',      'content': pending_query},
+            {'role': 'assistant', 'content': text},
+        ]
+        return final_history, render_messages(final_history), None, True
+
+    if text:
+        # Stream in progress — show current partial content
+        display = render_messages(history_list) + [
+            html.Div(pending_query, className='chat-bubble chat-bubble-user'),
+            dcc.Markdown(
+                text,
+                className='chat-bubble chat-bubble-assistant',
+                link_target='_blank',
+            ),
+        ]
+        return no_update, display, no_update, no_update
+
+    # No text yet — keep showing thinking dots
+    return no_update, no_update, no_update, no_update
 
 
 # ── Clientside: scroll to bottom on any message update ───────────────────────
