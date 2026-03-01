@@ -8,6 +8,9 @@ app = Dash(
     external_stylesheets=[
         "https://fonts.googleapis.com/css2?family=Lato:ital,wght@0,300;0,400;1,300;1,400&display=swap"
     ],
+    meta_tags=[
+        {"name": "viewport", "content": "width=device-width, initial-scale=1, maximum-scale=1"}
+    ],
 )
 
 app.layout = html.Div([
