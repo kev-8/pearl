@@ -2,7 +2,7 @@
 
 **[pearl.dosi.io](https://pearl.dosi.io)**
 
-Pearl is an AI research assistant for Haitian history and culture, created to celebrate Haiti's rich history, vibrant culture, and resilient people. Ask questions in English, French, or Haitian Creole. The name *pearl* comes from Haiti's nickname: Pearl of the Antilles. 
+Pearl is an AI research assistant created to celebrate Haiti's rich history, vibrant culture, and resilient people. Ask questions in English, French, or Haitian Creole. The name *pearl* comes from Haiti's nickname: Pearl of the Antilles. 
 
 ---
 
