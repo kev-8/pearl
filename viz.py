@@ -10,6 +10,27 @@ app = Dash(
     ],
 )
 
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        <link rel="apple-touch-icon" href="/assets/pearl.png">
+        {%css%}
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
 app.layout = html.Div([
     dcc.Store(id='initial-query', storage_type='session'),
     dcc.Store(id='thread-id', storage_type='session'),
