@@ -6,7 +6,6 @@ gunicorn==21.2.0
 anthropic==0.84.0
 langchain==1.2.7
 langchain-anthropic==1.3.4
-langchain-aws==1.2.2
 langchain-core==1.2.16
 langchain-text-splitters==1.0.0
 langgraph==1.0.7
@@ -20,9 +19,8 @@ pinecone==8.0.0
 # Web search
 ddgs==9.9.3
 
-# AWS (Bedrock for embeddings)
-boto3==1.42.39
-botocore==1.42.39
+# Embeddings
+cohere>=5.0.0
 
 # Data
 pandas==2.3.3

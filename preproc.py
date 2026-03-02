@@ -5,15 +5,13 @@ import time
 import json
 import logging
 
-import boto3
+import cohere
 import pandas as pd
-from botocore.exceptions import ClientError
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
 METADATA_COLS = ["SQLDATE", "source_url", "issue_id", "top_entity_names", "top_entity_labels"]
 EMBED_BATCH_SIZE = 96       # Bedrock Cohere Embed v4 limit
@@ -42,36 +40,28 @@ def doc_to_text_list(doc_list):
     return output
 
 
-def generate_text_embeddings(body, model_id="cohere.embed-v4:0", region_name='us-east-1'):
+def generate_text_embeddings(body, model_id="embed-v4.0", region_name='us-east-1'):
     """
-    Generate text embedding by using the Cohere Embed model.
+    Generate text embeddings using the Cohere API.
     Args:
-        body (str) : The request body to use.
-        model_id (str): The model ID to use.
-        region_name (str): The AWS region to invoke the model on.
+        body (bytes): JSON-encoded request body with 'texts' and 'input_type' keys.
+        model_id (str): The Cohere model ID to use.
+        region_name (str): Unused; kept for interface compatibility.
     Returns:
-        dict: The response from the model.
+        dict: {'embeddings': list_of_vectors}
     """
-    accept = '*/*'
-    content_type = 'application/json'
+    body_dict = json.loads(body)
+    texts = body_dict.get('texts', [])
+    input_type = body_dict.get('input_type', 'search_document')
 
-    bedrock = boto3.client(service_name='bedrock-runtime', region_name=region_name)
-
-    response = bedrock.invoke_model(
-        body=body,
-        modelId=model_id,
-        accept=accept,
-        contentType=content_type
+    co = cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
+    response = co.embed(
+        texts=texts,
+        model=model_id,
+        input_type=input_type,
+        embedding_types=['float'],
     )
-
-    raw = response.get('body').read()
-    try:
-        parsed = json.loads(raw)
-    except Exception:
-        logger.error("Failed to parse model response. Raw (truncated): %s", raw[:2000])
-        raise
-
-    return parsed
+    return {'embeddings': response.embeddings.float_}
 
 
 def normalize_embeddings(embeddings, expected_n=None):

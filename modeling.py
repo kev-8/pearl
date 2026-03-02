@@ -7,7 +7,6 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pinecone import Pinecone
 from ddgs import DDGS
-from botocore.exceptions import ClientError
 import operator
 from typing import Annotated, Literal, TypedDict
 from langchain.agents import create_agent
@@ -68,8 +67,8 @@ def search_pinecone(query: str) -> str:
 
     try:
         response_json = generate_text_embeddings(body_bytes)
-    except ClientError as err:
-        logger.error("ClientError: %s", err)
+    except Exception as err:
+        logger.error("Embedding error: %s", err)
         raise
 
     output = response_json.get('embeddings') or response_json.get('embedding')
