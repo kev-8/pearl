@@ -23,17 +23,18 @@ Multi-turn conversation
     (Referential Coherence)       references ("that", "li", "ça") to prior content?
 
 Judge model
-  Claude Sonnet 4.5 via AWS Bedrock
+  Claude Sonnet 4.5 via Anthropic API
 """
 
-import asyncio
 import json
 import logging
 import os
+import time
+import uuid
 from typing import Any, Optional, Type
 
 from botocore.exceptions import ClientError
-from langchain_aws import ChatBedrockConverse
+from langchain_anthropic import ChatAnthropic
 from pinecone import Pinecone
 from pydantic import BaseModel
 
@@ -58,7 +59,7 @@ from deepeval.test_case import (
     TurnParams,
 )
 
-from modeling import classify_query, conversational_agent, RouterState
+from modeling import classify_query, start_stream, get_stream_state, RouterState
 from preproc import generate_text_embeddings, normalize_embeddings
 
 logger = logging.getLogger(__name__)
@@ -66,17 +67,18 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("botocore.credentials").setLevel(logging.WARNING)
 
 
-# ── Judge model: Claude Sonnet 4.5  ──────────────
+# ── Judge model: Claude Sonnet 4.5 via Anthropic API ─────────────────────────
 
-class BedrockClaudeJudge(DeepEvalBaseLLM):
-    """DeepEval-compatible judge backed by Claude Sonnet 4.5."""
+class AnthropicClaudeJudge(DeepEvalBaseLLM):
+    """DeepEval-compatible judge backed by Claude Sonnet 4.5 via Anthropic API."""
 
     def __init__(
         self,
-        model_id: str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        model_id: str = "claude-sonnet-4-5-20250929",
     ):
         self._model_id = model_id
-        self._chat = ChatBedrockConverse(model=model_id)
+        self._chat = ChatAnthropic(model=model_id)
+        # self._chat = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
     def load_model(self):
         return self._chat
@@ -92,10 +94,10 @@ class BedrockClaudeJudge(DeepEvalBaseLLM):
         return (await self._chat.ainvoke(prompt)).content
 
     def get_model_name(self) -> str:
-        return f"Claude 3.5 Sonnet (Bedrock / {self._model_id})"
+        return f"Claude Sonnet 4.5 (Anthropic API / {self._model_id})"
 
 
-judge = BedrockClaudeJudge()
+judge = AnthropicClaudeJudge()
 
 
 # ── Retrieval helpers ─────────────────────────────────────────────────────────
@@ -149,6 +151,17 @@ def get_tools_called(query: str) -> list[ToolCall]:
     ]
 
 
+def _run_query(query: str, history: list[dict] | None = None) -> str:
+    """Run the full pipeline synchronously and return the complete response text."""
+    buffer_id = f"eval-{uuid.uuid4().hex[:8]}"
+    start_stream(query, history or [], buffer_id)
+    while True:
+        text, done = get_stream_state(buffer_id)
+        if done:
+            return text
+        time.sleep(0.1)
+
+
 def build_test_case(
     query: str,
     expected_sources: list[str],
@@ -161,12 +174,8 @@ def build_test_case(
     logger.info("[%s] Fetching routing decision…", thread_id)
     tools_called = get_tools_called(query)
 
-    logger.info("[%s] Invoking conversational agent…", thread_id)
-    result = conversational_agent.invoke(
-        {"messages": [{"role": "user", "content": query}]},
-        config={"configurable": {"thread_id": thread_id}},
-    )
-    final_answer = result["messages"][-1].content
+    logger.info("[%s] Running query…", thread_id)
+    final_answer = _run_query(query)
 
     return LLMTestCase(
         input=query,
@@ -311,27 +320,26 @@ def build_convo_test_case(
     expected_outcome: str,
 ) -> ConversationalTestCase:
     """
-    Run a multi-turn conversation through the conversational agent, capturing
+    Run a multi-turn conversation through the streaming pipeline, capturing
     each assistant response and its retrieval context, then return a
     ConversationalTestCase ready for multi-turn metrics.
 
     `turns_input` is a list of user messages in conversation order.
-    Each user message is sent under `thread_id` so the agent's InMemorySaver
-    maintains context across turns automatically.
+    History is accumulated manually and passed into each _run_query call so
+    that Pearl's classify and synthesis prompts receive full conversation context.
     """
     turns: list[Turn] = []
+    history: list[dict] = []
+
     for user_msg in turns_input:
         logger.info("[%s] User turn: %s", thread_id, user_msg[:60])
 
-        # Capture retrieval context for this user message
         retrieval_context = get_retrieval_context(user_msg)
+        assistant_response = _run_query(user_msg, history)
 
-        # Invoke the agent (state is preserved across calls via thread_id)
-        result = conversational_agent.invoke(
-            {"messages": [{"role": "user", "content": user_msg}]},
-            config={"configurable": {"thread_id": thread_id}},
-        )
-        assistant_response = result["messages"][-1].content
+        # Update history for the next turn
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": assistant_response})
 
         turns.append(Turn(role="user", content=user_msg))
         turns.append(

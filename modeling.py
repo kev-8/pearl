@@ -78,16 +78,16 @@ def search_pinecone(query: str) -> str:
     results = _index.query(
         namespace='__default__',
         vector=embeddings[0],
-        top_k=3,
+        top_k=6,
         include_metadata=True
     )
 
     lines = []
     for i, match in enumerate(results.get('matches', []), start=1):
         meta = match.get('metadata', {})
-        date = meta.get('date', 'unknown date')
-        source = meta.get('source', '')
-        entities = meta.get('entities', '')
+        date = meta.get('sqldate', 'unknown date')
+        source = meta.get('source_url', '')
+        entities = meta.get('top_entity_names', '')
         text = meta.get('text', '').strip()
         header = f"[{i}] Date: {date}"
         if source:
@@ -161,8 +161,12 @@ _SYNTHESIS_PROMPT = (
     "- A brief direct answer to the question (1-2 sentences)\n"
     "- Organized sections with headers if multiple aspects are covered\n"
     "- Bullet points for lists of facts, events, or entities\n"
-    "- Source citations inline (e.g., *Le Nouvelliste, 1947-03-12* or [Source](url))\n"
+    "- Source citations inline using the date and URL from the retrieved chunks "
+    "(e.g., *Le Nouvelliste, 1947-03-12* or [Source](url)). "
+    "Every historical claim must include a citation — do not omit dates or URLs present in the sources.\n"
     "- A \"Historical Context\" section when archival data provides meaningful background\n"
+    "If conversation context is provided, fully address the current question using that context — "
+    "do not give a brief or incomplete answer just because a prior turn covered a related topic. "
     "Avoid redundancy. Note discrepancies between sources if relevant. "
     "Keep the response focused and readable."
 )
@@ -209,7 +213,7 @@ def _format_history(history: list[dict], max_turns: int = 4) -> str:
         return ""
     recent = history[-(max_turns * 2):]
     return "\n".join(
-        f"{'User' if m['role'] == 'user' else 'Pearl'}: {m['content'][:400]}"
+        f"{'User' if m['role'] == 'user' else 'Pearl'}: {m['content'][:1500]}"
         for m in recent
     )
 
