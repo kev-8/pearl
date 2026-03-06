@@ -227,7 +227,7 @@ def _upsert_batch_with_retry(index, batch):
 
 
 def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
-                       upsert_progress_path, resume, max_vectors=None):
+                       upsert_progress_path, resume, max_vectors=None, id_offset=0):
     """Build records with metadata and upsert in batches of UPSERT_BATCH_SIZE."""
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
     pc = Pinecone(api_key=pinecone_api_key)
@@ -251,7 +251,7 @@ def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
             meta["text"] = meta["text"][:-overflow] + "..."
             logger.warning("Truncated metadata for chunk-%d (was %d bytes)", i, meta_bytes)
 
-        records.append({"id": f"chunk-{i}", "values": emb, "metadata": meta})
+        records.append({"id": f"chunk-{id_offset + i}", "values": emb, "metadata": meta})
 
     # Cap records to --max-vectors if specified
     if max_vectors and max_vectors < len(records):
@@ -307,6 +307,8 @@ def main():
                         help="Random seed for shuffle (default: 42)")
     parser.add_argument("--max-vectors", type=int, default=None,
                         help="Max vectors to upsert (cap for Pinecone Standard WU budget)")
+    parser.add_argument("--skip-vectors", type=int, default=0,
+                        help="Skip the first N chunks (already processed in a prior run)")
     args = parser.parse_args()
 
     if args.batch_size > EMBED_BATCH_SIZE:
@@ -322,9 +324,15 @@ def main():
     # 2. Chunk (optionally shuffle for temporal diversity)
     chunks_text, chunk_row_indices = chunk_dataframe(df, shuffle=args.shuffle, seed=args.seed)
 
-    # 3. Cap chunks to max-vectors to avoid embedding more than we'll upsert
+    # 3. Skip already-processed chunks from prior runs
+    if args.skip_vectors > 0:
+        logger.info("Skipping first %d chunks (--skip-vectors)", args.skip_vectors)
+        chunks_text = chunks_text[args.skip_vectors:]
+        chunk_row_indices = chunk_row_indices[args.skip_vectors:]
+
+    # 4. Cap chunks to max-vectors to avoid embedding more than we'll upsert
     if args.max_vectors and args.max_vectors < len(chunks_text):
-        logger.info("Capping to %d / %d chunks (--max-vectors)", args.max_vectors, len(chunks_text))
+        logger.info("Capping to %d / %d remaining chunks (--max-vectors)", args.max_vectors, len(chunks_text))
         chunks_text = chunks_text[:args.max_vectors]
         chunk_row_indices = chunk_row_indices[:args.max_vectors]
 
@@ -334,7 +342,8 @@ def main():
     # 5. Upsert to Pinecone in batches
     upsert_progress_path = args.checkpoint.replace('.jsonl', '_upsert_progress.txt')
     index = upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
-                               upsert_progress_path, args.resume, args.max_vectors)
+                               upsert_progress_path, args.resume, args.max_vectors,
+                               id_offset=args.skip_vectors)
 
     # 6. Report
     stats = index.describe_index_stats()

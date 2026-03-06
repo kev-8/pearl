@@ -4,5 +4,6 @@ embeddings_checkpoint*.jsonl
 *_upsert_progress.txt
 *.csv
 *.gif
+*.txt
 __pycache__/
 dloc/data/
