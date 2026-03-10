@@ -127,9 +127,9 @@ def chunk_dataframe(df, shuffle=False, seed=42):
 # ---------------------------------------------------------------------------
 
 def _is_throttling_error(exc):
-    """Check if an exception is a Bedrock throttling / rate-limit error."""
-    exc_str = str(exc)
-    return "ThrottlingException" in exc_str or "Too many" in exc_str
+    """Check if an exception is a throttling / rate-limit error."""
+    exc_str = str(exc).lower()
+    return any(k in exc_str for k in ["throttl", "too many", "rate limit", "429"])
 
 
 def _embed_batch_with_retry(texts):
@@ -146,7 +146,7 @@ def _embed_batch_with_retry(texts):
             response_json = generate_text_embeddings(body_bytes)
             raw_emb = response_json.get('embeddings') or response_json.get('embedding')
             return normalize_embeddings(raw_emb, expected_n=len(texts))
-        except (ClientError, Exception) as e:
+        except Exception as e:
             throttled = _is_throttling_error(e)
             max_attempts = THROTTLE_MAX_RETRIES if throttled else MAX_RETRIES
 
