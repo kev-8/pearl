@@ -197,14 +197,7 @@ def embed_all_chunks(chunks_text, batch_size, checkpoint_path, resume):
 
             time.sleep(0.1)  # rate-limit courtesy delay
 
-    # Read back all embeddings from checkpoint
-    all_embeddings = []
-    with open(checkpoint_path, 'r') as f:
-        for line in f:
-            all_embeddings.extend(json.loads(line))
-
-    logger.info("Embedding complete: %d vectors total", len(all_embeddings))
-    return all_embeddings
+    logger.info("Embedding complete: %d batches written to %s", total_batches, checkpoint_path)
 
 
 # ---------------------------------------------------------------------------
@@ -226,64 +219,95 @@ def _upsert_batch_with_retry(index, batch):
             time.sleep(delay)
 
 
-def upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
-                       upsert_progress_path, resume, max_vectors=None, id_offset=0):
-    """Build records with metadata and upsert in batches of UPSERT_BATCH_SIZE."""
+def _build_record(emb, chunk_text, chunk_row_idx, df, global_idx):
+    """Build a single Pinecone record with metadata."""
+    meta = {"text": chunk_text}
+
+    if chunk_row_idx is not None:
+        row = df.iloc[chunk_row_idx]
+        for col in METADATA_COLS:
+            if col in df.columns and pd.notna(row.get(col)):
+                meta[col.lower()] = str(row[col])
+
+    # Truncate text metadata if it exceeds Pinecone's 40KB limit
+    meta_bytes = len(json.dumps(meta).encode('utf-8'))
+    if meta_bytes > MAX_META_BYTES:
+        overflow = meta_bytes - MAX_META_BYTES + 100
+        meta["text"] = meta["text"][:-overflow] + "..."
+        logger.warning("Truncated metadata for chunk-%d (was %d bytes)", global_idx, meta_bytes)
+
+    return {"id": f"chunk-{global_idx}", "values": emb, "metadata": meta}
+
+
+def upsert_from_checkpoint(checkpoint_path, chunks_text, chunk_row_indices, df,
+                           upsert_progress_path, resume, max_vectors=None, id_offset=0):
+    """Stream embeddings from checkpoint JSONL and upsert in batches.
+
+    Reads one JSONL line at a time to avoid loading the full file into memory.
+    """
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
     pc = Pinecone(api_key=pinecone_api_key)
     index = pc.Index('index-1')
 
-    records = []
-    for i, emb in enumerate(embeddings):
-        meta = {"text": chunks_text[i]}
-
-        # Attach parent article metadata
-        if i < len(chunk_row_indices):
-            row = df.iloc[chunk_row_indices[i]]
-            for col in METADATA_COLS:
-                if col in df.columns and pd.notna(row.get(col)):
-                    meta[col.lower()] = str(row[col])
-
-        # Truncate text metadata if it exceeds Pinecone's 40KB limit
-        meta_bytes = len(json.dumps(meta).encode('utf-8'))
-        if meta_bytes > MAX_META_BYTES:
-            overflow = meta_bytes - MAX_META_BYTES + 100  # 100 byte safety margin
-            meta["text"] = meta["text"][:-overflow] + "..."
-            logger.warning("Truncated metadata for chunk-%d (was %d bytes)", i, meta_bytes)
-
-        records.append({"id": f"chunk-{id_offset + i}", "values": emb, "metadata": meta})
-
-    # Cap records to --max-vectors if specified
-    if max_vectors and max_vectors < len(records):
-        logger.info("Capping upsert to %d / %d vectors (--max-vectors)", max_vectors, len(records))
-        records = records[:max_vectors]
-
-    total_batches = (len(records) + UPSERT_BATCH_SIZE - 1) // UPSERT_BATCH_SIZE
-
-    # Resume: read how many upsert batches were already completed
-    completed_batches = 0
+    # Resume: read how many vectors were already upserted
+    vectors_upserted = 0
     if resume and os.path.exists(upsert_progress_path):
         with open(upsert_progress_path, 'r') as f:
             try:
-                completed_batches = int(f.read().strip())
+                vectors_upserted = int(f.read().strip())
             except ValueError:
-                completed_batches = 0
-        logger.info("Resuming upsert from batch %d / %d", completed_batches, total_batches)
+                vectors_upserted = 0
+        logger.info("Resuming upsert from vector %d", vectors_upserted)
 
-    for batch_idx in range(completed_batches, total_batches):
-        start = batch_idx * UPSERT_BATCH_SIZE
-        end = min(start + UPSERT_BATCH_SIZE, len(records))
-        _upsert_batch_with_retry(index, records[start:end])
+    batch = []
+    vector_idx = 0       # position within the checkpoint stream
+    upserted_count = 0   # vectors upserted this run
+    batch_count = 0
 
-        # Persist upsert progress after each batch
-        with open(upsert_progress_path, 'w') as f:
-            f.write(str(batch_idx + 1))
+    with open(checkpoint_path, 'r') as f:
+        for line in f:
+            embeddings = json.loads(line)
+            for emb in embeddings:
+                # Skip vectors already upserted
+                if vector_idx < vectors_upserted:
+                    vector_idx += 1
+                    continue
 
-        if (batch_idx + 1) % 50 == 0 or batch_idx == total_batches - 1:
-            logger.info("Upserted batch %d / %d  (%d vectors so far)",
-                        batch_idx + 1, total_batches, end)
+                # Stop if we've hit the max
+                if max_vectors and upserted_count >= max_vectors:
+                    break
 
-    logger.info("Upsert complete: %d vectors to Pinecone", len(records))
+                global_id = id_offset + vector_idx
+                chunk_text = chunks_text[vector_idx] if vector_idx < len(chunks_text) else ""
+                row_idx = chunk_row_indices[vector_idx] if vector_idx < len(chunk_row_indices) else None
+
+                batch.append(_build_record(emb, chunk_text, row_idx, df, global_id))
+                vector_idx += 1
+                upserted_count += 1
+
+                if len(batch) >= UPSERT_BATCH_SIZE:
+                    _upsert_batch_with_retry(index, batch)
+                    batch = []
+                    batch_count += 1
+
+                    with open(upsert_progress_path, 'w') as pf:
+                        pf.write(str(vectors_upserted + upserted_count))
+
+                    if batch_count % 50 == 0:
+                        logger.info("Upserted %d vectors so far (%d batches)",
+                                    upserted_count, batch_count)
+
+            if max_vectors and upserted_count >= max_vectors:
+                break
+
+    # Flush remaining
+    if batch:
+        _upsert_batch_with_retry(index, batch)
+        batch_count += 1
+        with open(upsert_progress_path, 'w') as pf:
+            pf.write(str(vectors_upserted + upserted_count))
+
+    logger.info("Upsert complete: %d vectors to Pinecone (%d batches)", upserted_count, batch_count)
     return index
 
 
@@ -309,6 +333,8 @@ def main():
                         help="Max vectors to upsert (cap for Pinecone Standard WU budget)")
     parser.add_argument("--skip-vectors", type=int, default=0,
                         help="Skip the first N chunks (already processed in a prior run)")
+    parser.add_argument("--upsert-only", action="store_true",
+                        help="Skip embedding, stream upsert from existing checkpoint file")
     args = parser.parse_args()
 
     if args.batch_size > EMBED_BATCH_SIZE:
@@ -336,14 +362,15 @@ def main():
         chunks_text = chunks_text[:args.max_vectors]
         chunk_row_indices = chunk_row_indices[:args.max_vectors]
 
-    # 4. Embed in batches
-    embeddings = embed_all_chunks(chunks_text, args.batch_size, args.checkpoint, args.resume)
+    # 5. Embed in batches (skip if --upsert-only)
+    if not args.upsert_only:
+        embed_all_chunks(chunks_text, args.batch_size, args.checkpoint, args.resume)
 
-    # 5. Upsert to Pinecone in batches
+    # 6. Stream upsert from checkpoint file
     upsert_progress_path = args.checkpoint.replace('.jsonl', '_upsert_progress.txt')
-    index = upsert_to_pinecone(embeddings, chunks_text, chunk_row_indices, df,
-                               upsert_progress_path, args.resume, args.max_vectors,
-                               id_offset=args.skip_vectors)
+    index = upsert_from_checkpoint(args.checkpoint, chunks_text, chunk_row_indices, df,
+                                   upsert_progress_path, args.resume, args.max_vectors,
+                                   id_offset=args.skip_vectors)
 
     # 6. Report
     stats = index.describe_index_stats()
