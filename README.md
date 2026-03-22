@@ -27,7 +27,7 @@ Pearl is an AI research assistant created to celebrate Haiti's rich history, vib
 
 ## Data
 
-The archive is built from *Le Nouvelliste* issues sourced via the Digital Libray of the Caribbean (dLOC), covering approximately 1898–1979. **[The archive is available here](https://dloc.com/UF00000081/00001)**
+The archive is built from *Le Nouvelliste* issues sourced via the Digital Libray of the Caribbean (dLOC), covering approximately 1899–1979. **[The archive is available here](https://dloc.com/UF00000081/00001)**
 
 ## Release
 
