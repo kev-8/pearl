@@ -7,3 +7,4 @@ embeddings_checkpoint*.jsonl
 *.txt
 __pycache__/
 dloc/data/
+radiohaiti/data/
