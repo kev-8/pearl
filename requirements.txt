@@ -28,3 +28,10 @@ numpy==2.3.5
 
 # Utils
 pydantic==2.12.5
+
+# Radio Haïti pipeline
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+openai-whisper>=20240930
+mlx-whisper>=0.4.0  # Apple Silicon only; falls back to openai-whisper on other platforms
