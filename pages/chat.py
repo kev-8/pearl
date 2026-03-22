@@ -47,6 +47,29 @@ layout = html.Div(
 )
 
 
+PLACEHOLDERS = {
+    'ht': 'Poze yon kesyon swivi…',
+    'fr': 'Poser une question complémentaire…',
+    'en': 'Ask a follow-up…',
+}
+
+# Common Haitian Creole words that distinguish it from French
+_CREOLE_MARKERS = {'ki', 'nan', 'pou', 'mwen', 'ou', 'sa', 'yon', 'ak', 'pa', 'li',
+                   'te', 'yo', 'lè', 'gen', 'fè', 'kisa', 'kouman', 'kote', 'poukisa',
+                   'èske', 'anpil', 'tout', 'sou'}
+
+
+def detect_language(text):
+    """Simple heuristic to detect Haitian Creole vs French vs English."""
+    words = set(text.lower().split())
+    if words & _CREOLE_MARKERS:
+        return 'ht'
+    # French accent markers and common words
+    if any(c in text for c in 'àâçéèêëîïôùûü') or words & {'les', 'des', 'une', 'est', 'dans', 'sur', 'avec', 'pour', 'qui', 'que', 'cette', 'sont'}:
+        return 'fr'
+    return 'en'
+
+
 def render_messages(history):
     """Convert list of {role, content} dicts to Dash bubble components."""
     bubbles = []
@@ -103,6 +126,7 @@ def initial_show(n_intervals, initial_query, history):
     Output('chat-messages', 'children', allow_duplicate=True),
     Output('chat-input', 'value'),
     Output('pending-query', 'data', allow_duplicate=True),
+    Output('chat-input', 'placeholder'),
     Input('chat-input', 'n_submit'),
     State('chat-input', 'value'),
     State('conversation-history', 'data'),
@@ -110,9 +134,11 @@ def initial_show(n_intervals, initial_query, history):
 )
 def submit_show(n_submit, value, history):
     if not value or not value.strip():
-        return no_update, no_update, no_update
+        return no_update, no_update, no_update, no_update
     query = value.strip()
-    return _thinking_state(history or [], query), '', query
+    lang = detect_language(query)
+    placeholder = PLACEHOLDERS.get(lang, PLACEHOLDERS['en'])
+    return _thinking_state(history or [], query), '', query, placeholder
 
 
 # ── Callback 3: kick off background stream when pending-query is set ──────────

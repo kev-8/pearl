@@ -20,14 +20,14 @@ Pearl is an AI research assistant created to celebrate Haiti's rich history, vib
 |-------|-----------|
 | Frontend | Dash (Python) |
 | LLM | Claude Sonnet 4.5 + Haiku 4.5 (Anthropic API) |
-| Embeddings | Cohere Embed v4 (AWS Bedrock) |
+| Embeddings | Cohere Embed v4 (Cohere API) |
 | Vector DB | Pinecone |
 | Web search | DuckDuckGo |
 | Hosting | Railway |
 
 ## Data
 
-The archive is built from *Le Nouvelliste* issues sourced via the Digital Library of the Caribbean (dLOC), covering approximately 1898–present. Issues are chunked, embedded with Cohere Embed v4, and stored in Pinecone for semantic retrieval.
+The archive is built from *Le Nouvelliste* issues sourced via the Digital Libray of the Caribbean (dLOC), covering approximately 1899–1979. **[The archive is available here](https://dloc.com/UF00000081/00001)**
 
 ## Release
 
