@@ -219,7 +219,7 @@ def _upsert_batch_with_retry(index, batch):
             time.sleep(delay)
 
 
-def _build_record(emb, chunk_text, chunk_row_idx, df, global_idx):
+def _build_record(emb, chunk_text, chunk_row_idx, df, global_idx, id_prefix="chunk"):
     """Build a single Pinecone record with metadata."""
     meta = {"text": chunk_text}
 
@@ -234,13 +234,13 @@ def _build_record(emb, chunk_text, chunk_row_idx, df, global_idx):
     if meta_bytes > MAX_META_BYTES:
         overflow = meta_bytes - MAX_META_BYTES + 100
         meta["text"] = meta["text"][:-overflow] + "..."
-        logger.warning("Truncated metadata for chunk-%d (was %d bytes)", global_idx, meta_bytes)
+        logger.warning("Truncated metadata for %s-%d (was %d bytes)", id_prefix, global_idx, meta_bytes)
 
-    return {"id": f"chunk-{global_idx}", "values": emb, "metadata": meta}
+    return {"id": f"{id_prefix}-{global_idx}", "values": emb, "metadata": meta}
 
 
 def upsert_from_checkpoint(checkpoint_path, chunks_text, chunk_row_indices, df,
-                           upsert_progress_path, resume, max_vectors=None, id_offset=0):
+                           upsert_progress_path, resume, max_vectors=None, id_offset=0, id_prefix="chunk"):
     """Stream embeddings from checkpoint JSONL and upsert in batches.
 
     Reads one JSONL line at a time to avoid loading the full file into memory.
@@ -281,7 +281,7 @@ def upsert_from_checkpoint(checkpoint_path, chunks_text, chunk_row_indices, df,
                 chunk_text = chunks_text[vector_idx] if vector_idx < len(chunks_text) else ""
                 row_idx = chunk_row_indices[vector_idx] if vector_idx < len(chunk_row_indices) else None
 
-                batch.append(_build_record(emb, chunk_text, row_idx, df, global_id))
+                batch.append(_build_record(emb, chunk_text, row_idx, df, global_id, id_prefix))
                 vector_idx += 1
                 upserted_count += 1
 
@@ -335,6 +335,9 @@ def main():
                         help="Skip the first N chunks (already processed in a prior run)")
     parser.add_argument("--upsert-only", action="store_true",
                         help="Skip embedding, stream upsert from existing checkpoint file")
+    parser.add_argument("--id-prefix", default="chunk",
+                        help="Prefix for Pinecone vector IDs (default: 'chunk'). Use a unique "
+                             "prefix per dataset to avoid ID collisions, e.g. 'rh' for Radio Haiti.")
     args = parser.parse_args()
 
     if args.batch_size > EMBED_BATCH_SIZE:
@@ -370,7 +373,7 @@ def main():
     upsert_progress_path = args.checkpoint.replace('.jsonl', '_upsert_progress.txt')
     index = upsert_from_checkpoint(args.checkpoint, chunks_text, chunk_row_indices, df,
                                    upsert_progress_path, args.resume, args.max_vectors,
-                                   id_offset=args.skip_vectors)
+                                   id_offset=args.skip_vectors, id_prefix=args.id_prefix)
 
     # 6. Report
     stats = index.describe_index_stats()

@@ -1,6 +1,6 @@
 .DS_Store
 *.json
-embeddings_checkpoint*.jsonl
+*_embeddings_checkpoint*.jsonl
 *_upsert_progress.txt
 *.csv
 *.gif
@@ -8,3 +8,4 @@ embeddings_checkpoint*.jsonl
 __pycache__/
 dloc/data/
 radiohaiti/data/
+*.log

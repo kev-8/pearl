@@ -49,7 +49,8 @@ layout = html.Div(
                     className='info-panel',
                     style={'display': 'none'},
                     children=[
-                        html.P('Data Source: Le Nouvelliste via Digital Library of the Caribbean (dLOC)', className='info-text'),
+                        html.P('Data Sources: Le Nouvelliste via Digital Library of the Caribbean (dLOC),' \
+                        '\nRadio Haïti broadcasts from the Duke University Libraries digital repository', className='info-text'),
                     ],
                 ),
             ],

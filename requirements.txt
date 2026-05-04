@@ -35,3 +35,4 @@ beautifulsoup4>=4.12.0
 lxml>=5.0.0
 openai-whisper>=20240930
 mlx-whisper>=0.4.0  # Apple Silicon only; falls back to openai-whisper on other platforms
+spacy>=3.7.0  # NER for process phase (model: fr_core_news_lg)

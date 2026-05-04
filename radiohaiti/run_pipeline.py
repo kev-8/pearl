@@ -16,6 +16,13 @@ Usage:
     python -m radiohaiti --phase transcribe --year-range 1980 1989 --delete-after
     python -m radiohaiti --phase transcribe --model large-v3  # default: turbo
 
+    # Phase 4 — NER (run spaCy French NER on transcripts)
+    python -m radiohaiti --phase process
+    python -m radiohaiti --phase process --resume
+
+    # Phase 5 — build CSV for Pinecone ingestion
+    python -m radiohaiti --phase build
+
 """
 
 import argparse
@@ -120,8 +127,23 @@ def main():
         print(f"\nTranscription summary:")
         print(f"  Newly transcribed: {count:,}")
 
-    elif args.phase in ("process", "build"):
-        logger.error("Phase '%s' is not yet implemented.", args.phase)
+    elif args.phase == "process":
+        from .process import run_process
+        count = run_process(
+            resume=args.resume,
+            year=args.year,
+            year_start=year_start,
+            year_end=year_end,
+            limit=args.limit,
+        )
+        print(f"\nNER summary:")
+        print(f"  Newly processed: {count:,}")
+
+    elif args.phase == "build":
+        from .build import run_build
+        df = run_build()
+        print(f"\nBuild summary:")
+        print(f"  Rows in CSV: {len(df):,}")
 
     elif args.phase == "all":
         logger.info("Running full pipeline...")
@@ -139,7 +161,10 @@ def main():
             year_start=year_start,
             year_end=year_end,
         )
-        logger.info("Phases 4 TBD.")
+        from .process import run_process
+        run_process(resume=args.resume, year=args.year, year_start=year_start, year_end=year_end)
+        from .build import run_build
+        run_build()
 
 
 if __name__ == "__main__":
