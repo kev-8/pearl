@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pinecone import Pinecone
 from ddgs import DDGS
+import cohere
 import operator
 from typing import Annotated, Literal, TypedDict
 from langchain.agents import create_agent
@@ -26,6 +27,34 @@ logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
 _pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
 _index = _pc.Index('index-1')
+_co = cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
+
+_RERANK_FETCH_K = 10  # candidates fetched from Pinecone before reranking
+_RERANK_TOP_N = 6     # kept after reranking
+
+
+def rerank_matches(query: str, matches: list[dict]) -> list[dict]:
+    """Rerank Pinecone matches by relevance to query; returns top _RERANK_TOP_N."""
+    indexed_texts = [
+        (i, m.get("metadata", {}).get("text", ""))
+        for i, m in enumerate(matches)
+    ]
+    non_empty = [(i, t) for i, t in indexed_texts if t.strip()]
+    if not non_empty:
+        return matches[:_RERANK_TOP_N]
+
+    orig_indices, docs = zip(*non_empty)
+    try:
+        response = _co.rerank(
+            model="rerank-v3.5",
+            query=query,
+            documents=list(docs),
+            top_n=min(_RERANK_TOP_N, len(docs)),
+        )
+        return [matches[orig_indices[r.index]] for r in response.results]
+    except Exception as err:
+        logger.warning("Rerank failed, falling back to original order: %s", err)
+        return matches[:_RERANK_TOP_N]
 
 # Streaming buffers keyed by session buffer_id
 _stream_buffers: dict[str, dict] = {}
@@ -77,12 +106,14 @@ def search_pinecone(query: str) -> str:
     results = _index.query(
         namespace='__default__',
         vector=embeddings[0],
-        top_k=6,
+        top_k=_RERANK_FETCH_K,
         include_metadata=True
     )
 
+    matches = rerank_matches(query, results.get('matches', []))
+
     lines = []
-    for i, match in enumerate(results.get('matches', []), start=1):
+    for i, match in enumerate(matches, start=1):
         meta = match.get('metadata', {})
         date = meta.get('sqldate', 'unknown date')
         source = meta.get('source_url', '')

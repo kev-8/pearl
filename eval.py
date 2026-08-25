@@ -59,7 +59,7 @@ from deepeval.test_case import (
     TurnParams,
 )
 
-from modeling import classify_query, start_stream, get_stream_state, RouterState
+from modeling import classify_query, start_stream, get_stream_state, RouterState, rerank_matches, _RERANK_FETCH_K
 from preproc import generate_text_embeddings, normalize_embeddings
 
 logger = logging.getLogger(__name__)
@@ -123,12 +123,13 @@ def get_retrieval_context(query: str) -> list[str]:
     results = _index.query(
         namespace="__default__",
         vector=embeddings[0],
-        top_k=6,
+        top_k=_RERANK_FETCH_K,
         include_metadata=True,
     )
+    matches = rerank_matches(query, results.get("matches", []))
     return [
         m.get("metadata", {}).get("text", "")
-        for m in results.get("matches", [])
+        for m in matches
         if m.get("metadata", {}).get("text")
     ]
 
