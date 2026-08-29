@@ -59,7 +59,7 @@ from deepeval.test_case import (
     TurnParams,
 )
 
-from modeling import classify_query, start_stream, get_stream_state, RouterState, rerank_matches, _RERANK_FETCH_K
+from modeling import classify_query, start_stream, get_stream_state, RouterState, rerank_matches, _RERANK_FETCH_K, _RERANK_MIN_SCORE
 from preproc import generate_text_embeddings, normalize_embeddings
 
 logger = logging.getLogger(__name__)
@@ -273,9 +273,12 @@ source_attribution = GEval(
     name="Source Attribution",
     criteria=(
         "Evaluate whether the response cites specific dates and/or source URLs from "
-        "the Le Nouvelliste archive when making historical claims. "
-        "Score 1 if every historical claim includes a date citation (e.g., "
-        "'Le Nouvelliste, 1947-03-12') or a URL. "
+        "Pearl's archives when making historical claims. Pearl draws on two archives: "
+        "Le Nouvelliste (a newspaper, e.g. 'Le Nouvelliste, 1947-03-12') and Radio "
+        "Haïti (broadcast transcripts, e.g. 'Radio Haïti, 1987-11-01'). Citations to "
+        "either archive count equally. "
+        "Score 1 if every historical claim includes a date citation from either "
+        "archive or a URL. "
         "Score 0 if historical claims are made with no attribution whatsoever. "
         "Partial credit for responses that cite some but not all claims."
     ),
@@ -287,14 +290,14 @@ source_attribution = GEval(
 language_consistency = GEval(
     name="Language Consistency",
     criteria=(
-        "The response should be written in the same language as the input question. "
-        "Pearl supports English, French, and Haitian Creole. "
-        "Score 1 if the main body of the response matches the input language exactly. "
-        "Score 0.5 if the response is mostly in the correct language but contains "
-        "untranslated passages (e.g., a quoted French excerpt within an English response). "
-        "Score 0 if the response is entirely in a different language from the question. "
-        "Note: brief inline citations like '*Le Nouvelliste, 1947*' do not count as "
-        "language switching."
+        "On a scale of 0 to 10, evaluate whether the response is written in the same "
+        "language as the input question. Pearl supports English, French, and Haitian Creole. "
+        "Brief inline citations such as '*Le Nouvelliste, 1947*' or source URLs do not "
+        "count as language switching. "
+        "Score 10 if the main body of the response matches the input language exactly. "
+        "Score 5 if the response is mostly in the correct language but contains untranslated "
+        "passages (e.g., a quoted French excerpt within an English response). "
+        "Score 0 if the response is entirely in a different language from the question."
     ),
     evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
     model=judge,
@@ -414,6 +417,25 @@ CONVO_SCENARIOS: list[tuple[list[str], str, str, str]] = [
         "Pearl rekonèt ke 'li' vle di dirijan Ayiti ki te mansyone nan premye repons "
         "lan, epi li reponn an kreyòl ayisyen sou sa dirijan sa a te fè pou ekonomi "
         "peyi a.",
+    ),
+
+    # English — explicit user-stated fact (targets KnowledgeRetentionMetric)
+    # KnowledgeRetentionMetric only scores turns where the user has stated an
+    # explicit fact about themselves/their context (see deepeval's extraction
+    # template) — the pronoun-reference scenarios above never trigger it, which
+    # is why that metric was pinned at 0% in Rounds 1-3 regardless of retrieval
+    # quality. This scenario gives it a real fact to track.
+    (
+        [
+            "I'm writing a research paper focused specifically on Cap-Haïtien.",
+            "What were the major economic changes there during the early 1800s?",
+        ],
+        "convo-en-factretain",
+        "User explicitly states their research focus is Cap-Haïtien, "
+        "then asks a follow-up using 'there' that depends on remembering this stated focus.",
+        "Pearl retains that the user's focus is Cap-Haïtien, resolves 'there' "
+        "correctly, and does not ask which city they mean or default to discussing "
+        "Port-au-Prince.",
     ),
 ]
 

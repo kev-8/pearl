@@ -29,8 +29,9 @@ _pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
 _index = _pc.Index('index-1')
 _co = cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
 
-_RERANK_FETCH_K = 10  # candidates fetched from Pinecone before reranking
-_RERANK_TOP_N = 6     # kept after reranking
+_RERANK_FETCH_K = 10   # candidates fetched from Pinecone before reranking
+_RERANK_TOP_N = 6      # kept after reranking
+_RERANK_MIN_SCORE = 0.1  # chunks scoring below this are dropped regardless of rank
 
 
 def rerank_matches(query: str, matches: list[dict]) -> list[dict]:
@@ -51,7 +52,11 @@ def rerank_matches(query: str, matches: list[dict]) -> list[dict]:
             documents=list(docs),
             top_n=min(_RERANK_TOP_N, len(docs)),
         )
-        return [matches[orig_indices[r.index]] for r in response.results]
+        return [
+            matches[orig_indices[r.index]]
+            for r in response.results
+            if r.relevance_score >= _RERANK_MIN_SCORE
+        ]
     except Exception as err:
         logger.warning("Rerank failed, falling back to original order: %s", err)
         return matches[:_RERANK_TOP_N]
