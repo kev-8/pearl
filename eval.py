@@ -272,17 +272,28 @@ tool_correctness = ToolCorrectnessMetric(
 source_attribution = GEval(
     name="Source Attribution",
     criteria=(
-        "Evaluate whether the response cites specific dates and/or source URLs from "
-        "Pearl's archives when making historical claims. Pearl draws on two archives: "
-        "Le Nouvelliste (a newspaper, e.g. 'Le Nouvelliste, 1947-03-12') and Radio "
-        "Haïti (broadcast transcripts, e.g. 'Radio Haïti, 1987-11-01'). Citations to "
-        "either archive count equally. "
-        "Score 1 if every historical claim includes a date citation from either "
-        "archive or a URL. "
-        "Score 0 if historical claims are made with no attribution whatsoever. "
-        "Partial credit for responses that cite some but not all claims."
+        "Evaluate whether the response properly attributes its claims, given which "
+        "tools were actually called (see Tools Called). "
+        "If `pinecone_search` was called: claims drawn from Pearl's archives should "
+        "include a dated archive citation — either Le Nouvelliste (a newspaper, e.g. "
+        "'Le Nouvelliste, 1947-03-12') or Radio Haïti (broadcast transcripts, e.g. "
+        "'Radio Haïti, 1987-11-01'); citations to either archive count equally. "
+        "If `web_search` was called: a source URL is sufficient attribution for "
+        "claims drawn from the web — do NOT require an archive-style citation for "
+        "these, since Pearl's archives only cover roughly 1899-2002 and cannot "
+        "document contemporary events. "
+        "Score 1 if every claim is attributed appropriately for the tool that "
+        "produced it (archive citation for archive-derived claims, URL for "
+        "web-derived claims). "
+        "Score 0 if claims are made with no attribution whatsoever. "
+        "Partial credit for responses that cite some but not all claims, or that "
+        "omit the citation type appropriate to the source actually used."
     ),
-    evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
+    evaluation_params=[
+        LLMTestCaseParams.INPUT,
+        LLMTestCaseParams.ACTUAL_OUTPUT,
+        LLMTestCaseParams.TOOLS_CALLED,
+    ],
     model=judge,
     threshold=0.6,
 )

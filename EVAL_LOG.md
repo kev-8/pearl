@@ -347,3 +347,44 @@ Source Attribution's remaining 2 failures are the two already-known open items b
 1. **Source Attribution scope bug** — criteria still requires archive citations for web-only current-events queries (`eval-en-current`), where none can exist.
 2. **Contextual Relevancy — `eval-ht-mixed`** — recovered this round; watch for recurrence.
 3. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
+
+---
+
+## Round 8 — Source Attribution Scope Bug (2026-08-29)
+
+### Investigation
+
+`eval-en-current` ("What is the current political situation in Haiti?") scored 0.0 on Source Attribution in Rounds 6 and 7. Its `expected_sources` is `["web_search"]` only — the router correctly never calls `pinecone_search` for it, since neither archive covers contemporary events (Le Nouvelliste ~1899-1979, Radio Haïti ~1957-2002, per project memory). The judge's reasoning explicitly demanded Le Nouvelliste/Radio Haïti citations anyway and failed the response for citing only web URLs (Global Conflict Tracker, Human Rights Watch, etc.) — attribution that was in fact correct and complete for a web-only query.
+
+The Round 5 criteria fix (naming both archives) addressed the "cited the wrong archive" failure mode but didn't address this one: the criteria text has no way to distinguish "this response should have cited an archive but didn't" from "this response correctly used only web sources because the archives don't cover this topic."
+
+### Decision
+Rewrite the `source_attribution` GEval criteria to condition the citation requirement on which tool actually produced the claim, using `TOOLS_CALLED` as a new evaluation param so the judge can see whether `pinecone_search` was invoked. Claims from `pinecone_search` require an archive citation (either archive, per Round 5); claims from `web_search` require only a source URL — archive citations are never expected when only web_search ran.
+
+### Changes Made
+- **`eval.py`:** Rewrote `source_attribution` criteria to scope the archive-citation requirement to `pinecone_search`-derived claims and accept URL-only citation for `web_search`-derived claims. Added `LLMTestCaseParams.TOOLS_CALLED` to `evaluation_params`.
+
+### Validation Results
+
+| Metric | Round 7 | Round 8 |
+|---|---|---|
+| Answer Relevancy | 100% | 100% |
+| Faithfulness | 100% | 86% (6/7) — see note below |
+| Contextual Relevancy | 100% | 100% |
+| Tool Correctness | 100% | 100% |
+| **Source Attribution** | 71% (5/7) | **100% (7/7)** |
+| Language Consistency | 100% | 100% |
+| Knowledge Retention | 25% (1/4) | 25% (1/4) — stable |
+| Conversation Completeness | 100% (4/4) | 75% (3/4) |
+| Referential Coherence | 100% | 100% |
+
+**Source Attribution: fixed.** `eval-en-current` now passes — the criteria correctly treats its web-only URL citations as sufficient attribution instead of demanding archive citations that were never possible.
+
+`convo-en-coffee` and `convo-ht-leader` passed again this run (second consecutive pass for both) — further confirms Round 7's retrieval-determinism fix is solid, not a one-off. `convo-en-factretain` dipped to 0.5 on Conversation Completeness — same as Round 5: the archive genuinely has no early-1800s Cap-Haïtien content, and Pearl said so honestly rather than fabricating. Not a new issue.
+
+**New observation — Faithfulness dip, unrelated to this fix.** `eval-en-current` scored 0.62 because the response mentioned Jovenel Moïse's 2021 assassination while `retrieval_context` for that test case (built by `get_retrieval_context()`) only contained Pinecone archive content about the Aristide coup. `get_retrieval_context()` always queries Pinecone regardless of which tool the production pipeline actually used for a given query — for web-only queries like this one, the "context" being faithfulness-checked isn't what the answer was actually grounded in, which can produce misleading fails. Pre-existing eval-harness gap, not something this round's changes caused; not yet fixed.
+
+### Remaining Issues (carry forward to Round 9)
+1. **Faithfulness harness gap** — `get_retrieval_context()` always queries Pinecone even for web-only queries, so Faithfulness (and Contextual Relevancy) can be checked against context the answer wasn't actually grounded in. Needs `get_retrieval_context` to respect which tools were actually classified/called, or a way to skip archive-faithfulness checking for web-only test cases.
+2. **Contextual Relevancy — `eval-ht-mixed`** — recovered in Rounds 7-8; watch for recurrence.
+3. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
