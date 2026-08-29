@@ -267,3 +267,83 @@ Pass rate dropped 71% → 14% (6/7 failing). Reading the judge's reasoning, most
 1. **Source Attribution criteria fix** — pending validation on next eval run.
 2. **Contextual Relevancy — eval-ht-mixed dip to 0.60** — watch on next run; may be normal variance.
 3. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
+
+---
+
+## Round 6 — Validation Run (2026-08-28)
+
+First run was interrupted mid-way through the multi-turn portion (killed externally, not a crash); single-turn results are from that run, multi-turn results are from a follow-up run of just the multi-turn portion (`CONVO_SCENARIOS`/`CONVO_METRICS` imported directly, no eval.py changes).
+
+### Single-turn results
+
+| Metric | Round 5 | Round 6 |
+|---|---|---|
+| Answer Relevancy | 100% | 100% |
+| Faithfulness | 100% | 100% |
+| Contextual Relevancy | 86% (6/7) | 86% (6/7) — same query, `eval-ht-mixed`, failed both runs at ~0.60 |
+| Tool Correctness | 100% | 100% |
+| Source Attribution | 14% (1/7) | 29% (2/7) |
+| Language Consistency | 100% | 100% |
+
+**Source Attribution fix confirmed working, partially.** No response was penalized this run for citing Radio Haïti instead of Le Nouvelliste — that failure mode from Round 5 is gone. Remaining failures are legitimate partial-citation gaps, **except `eval-en-current`** ("What is the current political situation in Haiti?"), which scored 0.0. That query is web-search-only by design — the archives have no 2024–2026 content — yet the criteria still requires archive citations for "historical claims" and dings it for having none. This is a scope bug: the criteria doesn't distinguish web-only queries from archive queries. Not fixed yet.
+
+**Contextual Relevancy — `eval-ht-mixed` failed at the same ~0.60 score two runs in a row** (Round 5 and Round 6). Two consecutive identical failures on the same query suggests a real mild weak spot rather than noise, though not investigated further this round.
+
+### Multi-turn results
+
+| Metric | Round 5 | Round 6 |
+|---|---|---|
+| Knowledge Retention | 25% (1/4) | 25% (1/4) — stable |
+| Conversation Completeness | 75% (3/4) | 50% (2/4) |
+| Referential Coherence | 100% | 75% (3/4) |
+
+`convo-en-factretain` and `convo-fr-occupation` scored identically to Round 5. Two scenarios regressed, both on retrieval, not synthesis:
+
+- **`convo-en-coffee`** ("coffee production in Haiti in the 1920s?"): Round 5 surfaced real 1920s data; Round 6 retrieval returned nothing usable for the same query, and Pearl correctly said it had no 1920s data rather than hallucinating (Conversation Completeness 0.0, Referential Coherence still 1.0 since the reference itself was resolved correctly).
+- **`convo-ht-leader`** ("Ki moun ki te dirije Ayiti nan ane 1930 yo?"): Round 5 correctly identified Sténio Vincent; Round 6 retrieval returned nothing and Pearl said so (Conversation Completeness 0.0, Referential Coherence 0.5 — partial, since it couldn't resolve "li" to an entity that was never established).
+
+Pearl's synthesis behavior was correct both times — it didn't fabricate an answer when retrieval came up empty. The regression is retrieval non-determinism: the same query surfaced different (in one case, apparently nothing useful) Pinecone candidates across two separate runs. This is consistent with the still-open empty-vector-slot issue — if OCR-empty phantom vectors occupy some of the top_k=10 slots on one run's embedding call but not another's, borderline real matches can get crowded out inconsistently.
+
+### Remaining Issues (carry forward to Round 7)
+1. **Retrieval non-determinism** — ✅ root-caused and fixed, see below. Pending validation on next eval run.
+2. **Source Attribution scope bug** — criteria still requires archive citations for web-only current-events queries (`eval-en-current`), where none can exist. Needs criteria rewrite to scope the requirement to queries that actually used `pinecone_search`.
+3. **Contextual Relevancy — `eval-ht-mixed`** — failed at ~0.60 two runs running; likely a real (mild) weak spot, not yet investigated.
+4. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
+
+---
+
+## Round 7 — Retrieval Non-Determinism Root Cause (2026-08-29)
+
+### Investigation
+
+The Round 6 regression (`convo-en-coffee`, `convo-ht-leader`) wasn't Pinecone flaking — it was upstream. `classify_query` uses `router_model` (Claude Haiku) to generate the actual sub-question text that gets embedded and sent to `search_pinecone`; that text is not the user's raw question, it's an LLM-generated rewrite. `router_model` had no `temperature` set, so `ChatAnthropic` passes nothing through and Anthropic defaults to `temperature=1.0` — full sampling.
+
+Confirmed empirically: called `classify_query` 5x on `"Ki moun ki te dirije Ayiti nan ane 1930 yo?"` and got 4 different sub-question rewrites across 5 calls, ranging from full Creole ("Ki moun ki te dirije Ayiti nan ane 1930 yo") to terse English ("leaders rulers Haiti 1930s government") to terse Creole ("dirije Ayiti 1930 prezidan"). Feeding each variant directly into `search_pinecone` showed the terse Creole variant returns **"No results found"** — a complete miss — while the full-question variant returns relevant 1930s election content. This exactly reproduces the Round 6 failure ("no historical data available... returned no results"). The classifier's sampling was silently rewriting user questions into keyword-style queries that sometimes fall outside what the embedding index can match, and which variant you got was random per request.
+
+### Fix
+Set `temperature=0` on `router_model` in `modeling.py`. Verified: 5 repeated calls to `classify_query` on the same two previously-flaky queries now produce byte-identical sub-question text every time, and the resulting `search_pinecone` call for the 1930s-leader query no longer returns empty (now surfaces October-1930 content instead of nothing).
+
+`synthesis_model` (final prose generation) was left untouched — it's a different concern (response quality/naturalness) and wasn't implicated in this failure; it doesn't feed back into what gets retrieved.
+
+### Validation Results
+
+Full eval re-run confirms the fix.
+
+| Metric | Round 6 | Round 7 |
+|---|---|---|
+| Contextual Relevancy | 86% (6/7) | **100% (7/7)** |
+| Source Attribution | 29% (2/7) | **71% (5/7)** |
+| Knowledge Retention | 25% (1/4) | 25% (1/4) — stable, as expected |
+| Conversation Completeness | 50% (2/4) | **100% (4/4)** |
+| Referential Coherence | 75% (3/4) | **100% (4/4)** |
+
+Both previously-flaky scenarios are now stable and correct: `convo-en-coffee` consistently retrieves 1920s coffee data (Completeness/Referential Coherence both 1.0), and `convo-ht-leader` consistently identifies Sténio Vincent and resolves "li" to him in the follow-up (both 1.0). `eval-ht-mixed` also recovered to a passing Contextual Relevancy score, further supporting classifier sampling as the root cause rather than Pinecone/embedding-level flakiness.
+
+Source Attribution's remaining 2 failures are the two already-known open items below (`eval-en-current` scope bug, one genuine Creole partial-citation gap) — not new regressions.
+
+**Retrieval non-determinism: closed.**
+
+### Remaining Issues (carry forward to Round 8)
+1. **Source Attribution scope bug** — criteria still requires archive citations for web-only current-events queries (`eval-en-current`), where none can exist.
+2. **Contextual Relevancy — `eval-ht-mixed`** — recovered this round; watch for recurrence.
+3. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.

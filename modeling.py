@@ -168,7 +168,7 @@ def search_web(query: str) -> dict:
 #     ),
 # )
 
-router_model = ChatAnthropic(model="claude-haiku-4-5-20251001")
+router_model = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
 synthesis_model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
 # router_model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
