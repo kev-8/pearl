@@ -463,5 +463,35 @@ Split confirmed working: 6 archive-backed cases ran full `METRICS`, 1 web-only c
 Remaining archive-backed dips are normal `synthesis_model` sampling variance (still `temperature=1`, unchanged), not new regressions: `eval-fr-hist` dipped on Contextual Relevancy from off-topic retrieved content (pre-existing noise pattern). Source Attribution had two dips extending the citation-formatting theme from Round 9: `eval-ht-mixed` again cited web sources by name without URLs, and `eval-ht-hist` (new variant) cited archive content as "Duke University, 2001" instead of the expected "Radio Haïti, 2001" format. Both point at the same root cause — `_SYNTHESIS_PROMPT`'s citation formatting isn't strict enough — reinforcing the Round 9 candidate fix.
 
 ### Remaining Issues (carry forward to Round 11)
-1. **`_SYNTHESIS_PROMPT` citation phrasing** — web-derived claims sometimes cited by name without URL; archive-derived claims sometimes cited by repository name ("Duke University") instead of the archive name ("Radio Haïti"). Two instances now reinforcing the same root cause. Candidate fix: tighten the citation format instructions in `_SYNTHESIS_PROMPT`. Not yet applied — production behavior change, wants explicit go-ahead.
+1. **`_SYNTHESIS_PROMPT` citation phrasing** — ✅ root-caused and fixed, see Round 11. Pending validation.
 2. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
+
+---
+
+## Round 11 — Synthesis Citation Format Root Cause (2026-08-31)
+
+### Investigation
+
+The "Duke University" mislabeling wasn't just a prompt-phrasing gap — `search_pinecone`'s formatted output never actually told the model which archive a chunk came from. Each result only showed `Date:` and `Source: <url>`; the model had to infer "Radio Haïti" purely from the bare `repository.duke.edu` URL, and sometimes labeled it by repository host instead ("Duke University"). Confirmed via a live query that Pinecone metadata has no archive-name field at all (`issue_id`, `source_url`, `sqldate`, `top_entity_labels`, `top_entity_names`, `text`) — but the vector ID prefix reliably distinguishes them (`rh-` = Radio Haïti, `chunk-` = Le Nouvelliste, per the existing ID namespacing convention).
+
+### Fix
+- **`modeling.py` `search_pinecone`:** each chunk header now includes an explicit `Archive: Radio Haïti` or `Archive: Le Nouvelliste` label, derived from the vector ID prefix — removing the need for the model to infer it.
+- **`modeling.py` `_SYNTHESIS_PROMPT`:** rewrote the citation instructions to (a) require citing the exact Archive name and Date shown per chunk, explicitly forbidding substituting the repository/host name, and (b) require a source URL for every web-derived claim, forbidding name-only citation (e.g. "Wikipedia" with no link).
+
+Verified directly: `search_pinecone` output for a Radio Haïti chunk now shows `[1] Archive: Radio Haïti | Date: 19880107 | Source: https://repository.duke.edu/...`.
+
+### Validation Results
+
+| Metric | Round 10 archive-backed | Round 11 archive-backed | Round 10 web-only | Round 11 web-only |
+|---|---|---|---|---|
+| Source Attribution | 67% (4/6) | **100% (6/6)** | 100% (1/1) | 100% (1/1) |
+| Contextual Relevancy | 83% (5/6) | 50% (3/6) | — | — |
+
+**Source Attribution: fully fixed, both citation-format gaps closed.** No more repository-name mislabeling ("Duke University"), no more name-only web citations. This closes the citation-formatting thread that ran through Rounds 8-11.
+
+Multi-turn stable: `convo-en-coffee` and `convo-ht-leader` passed for a third consecutive run (Conversation Completeness/Referential Coherence 1.0 both), confirming Round 7's determinism fix continues to hold. `convo-en-factretain` dipped to 0.5 again — same known, expected behavior as every prior round (archive genuinely lacks early-1800s Cap-Haïtien content; Pearl says so honestly rather than fabricating).
+
+**Contextual Relevancy dip to 50% is unrelated to this fix.** One case (`eval-ht-mixed`) scored 0.0 because the retrieval context that run was entirely OCR-corrupted text ("Princionnens, Oulve une belle oy: gentation") with no coherent content — this is the pre-existing, already-tracked empty-vector/OCR-garbage issue (still open, see below), not a citation-formatting regression. The other dips are the same recurring off-topic-content noise pattern documented since Round 1.
+
+### Remaining Issues (carry forward to Round 12)
+1. **Empty vector slots / OCR garbage** — ~40% of top-10 Pinecone results for some queries are empty vectors; some archive chunks are entirely OCR-corrupted and occasionally pass the rerank threshold anyway (Round 11: `eval-ht-mixed` scored Contextual Relevancy 0.0 from this). No longer just a "nice to fix" — now has a concrete recent failure example. Needs a Pinecone metadata filter or cleanup during a future re-index.

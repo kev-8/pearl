@@ -13,7 +13,6 @@ from typing import Annotated, Literal, TypedDict
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_anthropic import ChatAnthropic
-# from langchain_aws import ChatBedrockConverse
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 from langgraph.checkpoint.memory import InMemorySaver
@@ -124,7 +123,9 @@ def search_pinecone(query: str) -> str:
         source = meta.get('source_url', '')
         entities = meta.get('top_entity_names', '')
         text = meta.get('text', '').strip()
-        header = f"[{i}] Date: {date}"
+        # Vector ID namespacing: 'rh-' = Radio Haïti, 'chunk-' = Le Nouvelliste.
+        archive = 'Radio Haïti' if str(match.get('id', '')).startswith('rh-') else 'Le Nouvelliste'
+        header = f"[{i}] Archive: {archive} | Date: {date}"
         if source:
             header += f" | Source: {source}"
         lines.append(header)
@@ -170,7 +171,6 @@ def search_web(query: str) -> dict:
 
 router_model = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
 synthesis_model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
-# router_model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
 # Define structured output schema for the classifier
 class ClassificationResult(BaseModel):
@@ -196,9 +196,15 @@ _SYNTHESIS_PROMPT = (
     "- A brief direct answer to the question (1-2 sentences)\n"
     "- Organized sections with headers if multiple aspects are covered\n"
     "- Bullet points for lists of facts, events, or entities\n"
-    "- Source citations inline using the date and URL from the retrieved chunks "
-    "(e.g., *Le Nouvelliste, 1947-03-12* or [Source](url)). "
-    "Every historical claim must include a citation — do not omit dates or URLs present in the sources.\n"
+    "- Source citations inline for every claim:\n"
+    "  - For archive results (search_pinecone), cite using the exact Archive name and "
+    "Date shown for that chunk — e.g. *Le Nouvelliste, 1947-03-12* or *Radio Haïti, "
+    "1987-11-01*. Never substitute the repository or host name (e.g. 'Duke "
+    "University') for the Archive name.\n"
+    "  - For web results (web_search), always cite the source URL, e.g. "
+    "[Source](url) — never cite a web source by name alone (e.g. 'Wikipedia') "
+    "without its URL.\n"
+    "  Do not omit dates, archive names, or URLs present in the sources.\n"
     "- A \"Historical Context\" section when archival data provides meaningful background\n"
     "If conversation context is provided, fully address the current question using that context — "
     "do not give a brief or incomplete answer just because a prior turn covered a related topic. "
