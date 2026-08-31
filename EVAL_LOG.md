@@ -385,6 +385,83 @@ Rewrite the `source_attribution` GEval criteria to condition the citation requir
 **New observation — Faithfulness dip, unrelated to this fix.** `eval-en-current` scored 0.62 because the response mentioned Jovenel Moïse's 2021 assassination while `retrieval_context` for that test case (built by `get_retrieval_context()`) only contained Pinecone archive content about the Aristide coup. `get_retrieval_context()` always queries Pinecone regardless of which tool the production pipeline actually used for a given query — for web-only queries like this one, the "context" being faithfulness-checked isn't what the answer was actually grounded in, which can produce misleading fails. Pre-existing eval-harness gap, not something this round's changes caused; not yet fixed.
 
 ### Remaining Issues (carry forward to Round 9)
-1. **Faithfulness harness gap** — `get_retrieval_context()` always queries Pinecone even for web-only queries, so Faithfulness (and Contextual Relevancy) can be checked against context the answer wasn't actually grounded in. Needs `get_retrieval_context` to respect which tools were actually classified/called, or a way to skip archive-faithfulness checking for web-only test cases.
+1. **Faithfulness harness gap** — ✅ fixed, see Round 9. Pending validation.
 2. **Contextual Relevancy — `eval-ht-mixed`** — recovered in Rounds 7-8; watch for recurrence.
 3. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
+
+---
+
+## Round 9 — Faithfulness Harness Gap (2026-08-29)
+
+### Investigation
+
+`get_retrieval_context()` always queried Pinecone for the raw user question, regardless of which tool the production pipeline actually used for that query. For `eval-en-current` (web-only, current events), this meant Faithfulness/Contextual Relevancy were checking the response against Pinecone archive content the pipeline never used to generate the answer — the response was faithful to its actual (web) sources, but scored against unrelated archive content and failed. Same root class of bug as the Round 5/8 Source Attribution issues: the eval harness's ground truth didn't match what the pipeline actually did.
+
+A second, related gap: `get_tools_called()` never passed conversation history into `classify_query`, even though the real pipeline (`_stream_query`) does for turn 2+ (for follow-up/pronoun resolution). So in multi-turn scenarios, the eval harness's reconstructed sub-query for turn 2+ could differ from what the real pipeline used, independent of the web-vs-archive issue.
+
+### Fix
+- `get_tools_called(query, history_str="")` now threads `history_str` through to `classify_query`, matching what `_stream_query` does per turn.
+- `get_retrieval_context()` rewritten to take `tools_called` (not a raw query string): it only queries Pinecone for `pinecone_search` entries, using the exact sub-query text the classifier actually produced, and returns `[]` when only `web_search` was called. This reconstructs precisely what `search_pinecone` retrieved in the real run — reliable now that `classify_query` is deterministic (Round 7's `temperature=0` fix).
+- `build_test_case` now fetches `tools_called` first, then passes it to `get_retrieval_context`.
+- `build_convo_test_case` now computes `history_str` from the accumulated history before each turn (mirroring `_stream_query`) and threads it through the same way.
+
+Verified directly: `get_retrieval_context` on `eval-en-current`'s tools_called now returns `[]` (was previously fetching unrelated Aristide-coup content); on `eval-en-hist` it still returns real archive content as before.
+
+### First validation attempt — crashed
+`build_test_case` collapsed an empty `retrieval_context` to `None` via `retrieval_context or None`. `FaithfulnessMetric` requires `retrieval_context is not None`, so the eval crashed outright on `eval-en-current` (`MissingTestCaseParamsError`). Fixed by keeping `retrieval_context` as `[]` rather than collapsing to `None` — `[]` correctly means "no archive queried," which is a real and valid state, distinct from `None` ("required but missing").
+
+### Validation Results
+
+| Metric | Round 8 | Round 9 |
+|---|---|---|
+| Answer Relevancy | 100% | 100% |
+| **Faithfulness** | 86% (6/7) | **100% (7/7)** |
+| Contextual Relevancy | 100% | 71% (5/7) |
+| Tool Correctness | 100% | 100% |
+| Source Attribution | 100% | 86% (6/7) |
+| Language Consistency | 100% | 100% |
+| Knowledge Retention | 25% | 25% — stable |
+| Conversation Completeness | 75% | 100% |
+| Referential Coherence | 100% | 100% |
+
+**Faithfulness: fixed.** `eval-en-current` no longer checked against unrelated archive content.
+
+**Contextual Relevancy dropped — expected, structural, not a defect.** `eval-en-current` now scores 0.0: with `retrieval_context` correctly empty, the metric ("are these retrieved chunks relevant") trivially fails since there's nothing to judge. Same class of gap Source Attribution had before Round 8 — carried forward as Round 10 below. `eval-fr-hist` also dipped to 0.52 from unrelated content noise (off-topic chunks about Haitian troops in the Dominican Republic).
+
+**New finding — `eval-ht-mixed` Source Attribution dropped to 0.5.** Legitimate, not a metric bug: the response cited web sources by name (YouTube, Britannica, Wikipedia) without URLs, even though URLs are available to `synthesis_model` (DDGS results include `href`, and `_run_source` passes the full stringified result through). `_SYNTHESIS_PROMPT` phrases the citation format as two interchangeable styles ('*Le Nouvelliste, 1947-03-12*' or '[Source](url)') rather than requiring a URL specifically for web-derived claims — logged as a candidate prompt fix, not yet applied.
+
+### Remaining Issues (carry forward to Round 10)
+1. **Contextual Relevancy scope bug** — same class of issue as Source Attribution before Round 8: structurally scores 0 for web-only queries since there's no archive context to judge. Needs the same treatment (exclude from web-only test cases, or otherwise scope the requirement).
+2. **`_SYNTHESIS_PROMPT` citation phrasing** — web-derived claims sometimes cited by name without URL, even though the URL is available in-context. Candidate fix: make URL citation mandatory for web-derived claims in the prompt. Not yet applied — production behavior change, wants explicit go-ahead.
+3. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.
+
+---
+
+## Round 10 — Contextual Relevancy Scope Bug (2026-08-29)
+
+### Decision
+Same fix pattern as Round 8 (Source Attribution), but `ContextualRelevancyMetric` is a built-in deepeval metric class, not a GEval with editable criteria text — its relevance logic isn't scopable via prompt changes. Instead, split single-turn evaluation into two `evaluate()` calls based on which test cases actually called `pinecone_search`: the full `METRICS` list runs on archive-backed cases, and a `WEB_ONLY_METRICS` list (identical, minus `contextual_relevancy`) runs on web-only cases. Mirrors the existing pattern of separate `evaluate()` calls for single-turn vs. multi-turn.
+
+### Changes Made
+- **`eval.py`:** Added `WEB_ONLY_METRICS = [m for m in METRICS if m is not contextual_relevancy]`. Split the single-turn `__main__` loop into `archive_cases`/`web_only_cases` (based on `tc.tools_called`), running `METRICS` on the former and `WEB_ONLY_METRICS` on the latter.
+
+### Validation Results
+
+Split confirmed working: 6 archive-backed cases ran full `METRICS`, 1 web-only case (`eval-en-current`) ran `WEB_ONLY_METRICS` — Contextual Relevancy correctly not evaluated at all for it, and its Source Attribution reasoning explicitly confirms correctness: "No archive-style citations... present, which is correct since pinecone_search was not called."
+
+| Metric | Archive-backed (6) | Web-only (1) |
+|---|---|---|
+| Answer Relevancy | 100% | 100% |
+| Faithfulness | 100% | 100% |
+| Contextual Relevancy | 83% (5/6) | — correctly not run |
+| Tool Correctness | 100% | 100% |
+| Source Attribution | 67% (4/6) | 100% (1/1) |
+| Language Consistency | 100% | 100% |
+
+**Contextual Relevancy scope bug: closed.**
+
+Remaining archive-backed dips are normal `synthesis_model` sampling variance (still `temperature=1`, unchanged), not new regressions: `eval-fr-hist` dipped on Contextual Relevancy from off-topic retrieved content (pre-existing noise pattern). Source Attribution had two dips extending the citation-formatting theme from Round 9: `eval-ht-mixed` again cited web sources by name without URLs, and `eval-ht-hist` (new variant) cited archive content as "Duke University, 2001" instead of the expected "Radio Haïti, 2001" format. Both point at the same root cause — `_SYNTHESIS_PROMPT`'s citation formatting isn't strict enough — reinforcing the Round 9 candidate fix.
+
+### Remaining Issues (carry forward to Round 11)
+1. **`_SYNTHESIS_PROMPT` citation phrasing** — web-derived claims sometimes cited by name without URL; archive-derived claims sometimes cited by repository name ("Duke University") instead of the archive name ("Radio Haïti"). Two instances now reinforcing the same root cause. Candidate fix: tighten the citation format instructions in `_SYNTHESIS_PROMPT`. Not yet applied — production behavior change, wants explicit go-ahead.
+2. **Empty vector slots** — ~40% of top-10 Pinecone results for some queries are empty vectors. Flagged for cleanup during a future re-index.

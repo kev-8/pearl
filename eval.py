@@ -59,7 +59,7 @@ from deepeval.test_case import (
     TurnParams,
 )
 
-from modeling import classify_query, start_stream, get_stream_state, RouterState, rerank_matches, _RERANK_FETCH_K, _RERANK_MIN_SCORE
+from modeling import classify_query, start_stream, get_stream_state, RouterState, rerank_matches, _RERANK_FETCH_K, _RERANK_MIN_SCORE, _format_history
 from preproc import generate_text_embeddings, normalize_embeddings
 
 logger = logging.getLogger(__name__)
@@ -106,35 +106,7 @@ _pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 _index = _pc.Index("index-1")
 
 
-def get_retrieval_context(query: str) -> list[str]:
-    """Return the raw text of each chunk Pinecone would return for `query`."""
-    body_bytes = json.dumps(
-        {"texts": [query], "input_type": "search_query"}, ensure_ascii=False
-    ).encode("utf-8")
-    try:
-        response_json = generate_text_embeddings(body_bytes)
-    except ClientError as err:
-        logger.error("Embedding error: %s", err)
-        return []
-
-    output = response_json.get("embeddings") or response_json.get("embedding")
-    embeddings = normalize_embeddings(output, expected_n=1)
-
-    results = _index.query(
-        namespace="__default__",
-        vector=embeddings[0],
-        top_k=_RERANK_FETCH_K,
-        include_metadata=True,
-    )
-    matches = rerank_matches(query, results.get("matches", []))
-    return [
-        m.get("metadata", {}).get("text", "")
-        for m in matches
-        if m.get("metadata", {}).get("text")
-    ]
-
-
-def get_tools_called(query: str) -> list[ToolCall]:
+def get_tools_called(query: str, history_str: str = "") -> list[ToolCall]:
     """Run classify_query and return a ToolCall for each routing decision."""
     state: RouterState = {
         "query": query,
@@ -142,7 +114,7 @@ def get_tools_called(query: str) -> list[ToolCall]:
         "results": [],
         "final_answer": "",
     }
-    result = classify_query(state)
+    result = classify_query(state, history_str)
     return [
         ToolCall(
             name=c["source"],
@@ -150,6 +122,52 @@ def get_tools_called(query: str) -> list[ToolCall]:
         )
         for c in result.get("classifications", [])
     ]
+
+
+def get_retrieval_context(tools_called: list[ToolCall]) -> list[str]:
+    """
+    Return the raw text of each chunk Pinecone actually returned for the
+    pinecone_search sub-queries Pearl issued (per `tools_called`), or []
+    if pinecone_search wasn't called for this turn — e.g. current-events
+    queries routed to web_search only, which the archives can't cover.
+    Reconstructs exactly what `search_pinecone` retrieved, since
+    classify_query is deterministic (router_model runs at temperature=0).
+    """
+    pinecone_calls = [t for t in tools_called if t.name == "pinecone_search"]
+    if not pinecone_calls:
+        return []
+
+    contexts: list[str] = []
+    for call in pinecone_calls:
+        subquery = call.input_parameters.get("query", "")
+        if not subquery:
+            continue
+
+        body_bytes = json.dumps(
+            {"texts": [subquery], "input_type": "search_query"}, ensure_ascii=False
+        ).encode("utf-8")
+        try:
+            response_json = generate_text_embeddings(body_bytes)
+        except ClientError as err:
+            logger.error("Embedding error: %s", err)
+            continue
+
+        output = response_json.get("embeddings") or response_json.get("embedding")
+        embeddings = normalize_embeddings(output, expected_n=1)
+
+        results = _index.query(
+            namespace="__default__",
+            vector=embeddings[0],
+            top_k=_RERANK_FETCH_K,
+            include_metadata=True,
+        )
+        matches = rerank_matches(subquery, results.get("matches", []))
+        contexts.extend(
+            m.get("metadata", {}).get("text", "")
+            for m in matches
+            if m.get("metadata", {}).get("text")
+        )
+    return contexts
 
 
 def _run_query(query: str, history: list[dict] | None = None) -> str:
@@ -169,11 +187,11 @@ def build_test_case(
     thread_id: str,
 ) -> LLMTestCase:
     """Run the full pipeline for `query` and return a populated LLMTestCase."""
-    logger.info("[%s] Fetching retrieval context…", thread_id)
-    retrieval_context = get_retrieval_context(query)
-
     logger.info("[%s] Fetching routing decision…", thread_id)
     tools_called = get_tools_called(query)
+
+    logger.info("[%s] Fetching retrieval context…", thread_id)
+    retrieval_context = get_retrieval_context(tools_called)
 
     logger.info("[%s] Running query…", thread_id)
     final_answer = _run_query(query)
@@ -181,7 +199,11 @@ def build_test_case(
     return LLMTestCase(
         input=query,
         actual_output=final_answer,
-        retrieval_context=retrieval_context or None,
+        # Kept as [] rather than collapsed to None for web-only queries:
+        # FaithfulnessMetric/ContextualRelevancyMetric require non-None
+        # retrieval_context, and [] correctly signals "no archive queried"
+        # (see Round 9) rather than "archive queried, nothing relevant found".
+        retrieval_context=retrieval_context,
         tools_called=tools_called,
         expected_tools=[ToolCall(name=s) for s in expected_sources],
         name=thread_id,
@@ -324,6 +346,12 @@ METRICS = [
     language_consistency,
 ]
 
+# ContextualRelevancyMetric judges whether retrieved chunks are relevant to
+# the query — meaningless (and structurally 0) for web-only queries, where
+# retrieval_context is correctly empty because no archive was queried (see
+# Round 9/10). Applied only to test cases where pinecone_search was called.
+WEB_ONLY_METRICS = [m for m in METRICS if m is not contextual_relevancy]
+
 
 # ── Multi-turn helpers ────────────────────────────────────────────────────────
 
@@ -349,7 +377,12 @@ def build_convo_test_case(
     for user_msg in turns_input:
         logger.info("[%s] User turn: %s", thread_id, user_msg[:60])
 
-        retrieval_context = get_retrieval_context(user_msg)
+        # Mirrors _stream_query: classify with the same history the real
+        # pipeline sees for this turn, so retrieval_context reflects the
+        # sub-query Pearl actually issued (not the raw user message).
+        history_str = _format_history(history)
+        tools_called = get_tools_called(user_msg, history_str)
+        retrieval_context = get_retrieval_context(tools_called)
         assistant_response = _run_query(user_msg, history)
 
         # Update history for the next turn
@@ -507,8 +540,22 @@ if __name__ == "__main__":
         tc = build_test_case(query, expected_sources, thread_id)
         test_cases.append(tc)
 
-    print(f"\nRunning single-turn evaluation ({len(test_cases)} cases)…\n")
-    evaluate(test_cases, METRICS)
+    # Split by whether pinecone_search was actually called, so Contextual
+    # Relevancy is only applied where there's archive context to judge.
+    archive_cases: list[LLMTestCase] = []
+    web_only_cases: list[LLMTestCase] = []
+    for tc in test_cases:
+        if any(t.name == "pinecone_search" for t in tc.tools_called):
+            archive_cases.append(tc)
+        else:
+            web_only_cases.append(tc)
+
+    print(f"\nRunning single-turn evaluation ({len(archive_cases)} archive-backed cases)…\n")
+    evaluate(archive_cases, METRICS)
+
+    if web_only_cases:
+        print(f"\nRunning single-turn evaluation ({len(web_only_cases)} web-only cases, no Contextual Relevancy)…\n")
+        evaluate(web_only_cases, WEB_ONLY_METRICS)
 
     # ── Multi-turn evaluation ──────────────────────────────────────────────────
     convo_cases: list[ConversationalTestCase] = []
