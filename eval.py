@@ -160,6 +160,7 @@ def get_retrieval_context(tools_called: list[ToolCall]) -> list[str]:
             vector=embeddings[0],
             top_k=_RERANK_FETCH_K,
             include_metadata=True,
+            filter={"text": {"$ne": ""}},
         )
         matches = rerank_matches(subquery, results.get("matches", []))
         contexts.extend(
@@ -501,14 +502,14 @@ conversation_completeness = ConversationCompletenessMetric(
 referential_coherence = ConversationalGEval(
     name="Referential Coherence",
     criteria=(
-        "Evaluate whether the assistant correctly resolves vague references and "
-        "pronouns in follow-up questions back to entities or topics established in "
-        "earlier turns. Pearl supports English, French, and Haitian Creole — common "
-        "reference words include 'that', 'it', 'they' (EN); 'en', 'y', 'ça', 'celui-ci' "
-        "(FR); 'li', 'yo', 'sa' (HT Creole). "
-        "Score 1 if the assistant resolves the reference correctly and answers the "
+        "On a scale of 0 to 10, evaluate whether the assistant correctly resolves "
+        "vague references and pronouns in follow-up questions back to entities or "
+        "topics established in earlier turns. Pearl supports English, French, and "
+        "Haitian Creole — common reference words include 'that', 'it', 'they' (EN); "
+        "'en', 'y', 'ça', 'celui-ci' (FR); 'li', 'yo', 'sa' (HT Creole). "
+        "Score 10 if the assistant resolves the reference correctly and answers the "
         "follow-up in a way that is clearly continuous with the prior turn. "
-        "Score 0.5 if the assistant partially resolves the reference or asks for "
+        "Score 5 if the assistant partially resolves the reference or asks for "
         "clarification when the context was unambiguous. "
         "Score 0 if the assistant ignores the reference and gives an unrelated response."
     ),

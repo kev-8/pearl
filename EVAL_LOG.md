@@ -494,4 +494,54 @@ Multi-turn stable: `convo-en-coffee` and `convo-ht-leader` passed for a third co
 **Contextual Relevancy dip to 50% is unrelated to this fix.** One case (`eval-ht-mixed`) scored 0.0 because the retrieval context that run was entirely OCR-corrupted text ("Princionnens, Oulve une belle oy: gentation") with no coherent content — this is the pre-existing, already-tracked empty-vector/OCR-garbage issue (still open, see below), not a citation-formatting regression. The other dips are the same recurring off-topic-content noise pattern documented since Round 1.
 
 ### Remaining Issues (carry forward to Round 12)
-1. **Empty vector slots / OCR garbage** — ~40% of top-10 Pinecone results for some queries are empty vectors; some archive chunks are entirely OCR-corrupted and occasionally pass the rerank threshold anyway (Round 11: `eval-ht-mixed` scored Contextual Relevancy 0.0 from this). No longer just a "nice to fix" — now has a concrete recent failure example. Needs a Pinecone metadata filter or cleanup during a future re-index.
+1. **Empty vector slots** — ✅ fixed, see Round 12. Pending validation.
+2. **OCR garbage (non-empty but corrupted text)** — distinct from empty vectors: chunks with real but heavily corrupted OCR text can still occupy top_k slots and pass the rerank threshold (Round 11's `eval-ht-mixed` 0.0 case had garbled-but-non-empty content). The Round 1 pre-processing quality filter option (drop chunks below a word-count/non-ASCII-density threshold during a future re-index) targets this; the Round 12 metadata filter does not.
+
+---
+
+## Round 12 — Empty Vector Slots Fix (2026-08-31)
+
+### Investigation
+
+Confirmed empirically that the `text` metadata field is always present on every vector, just sometimes an empty string for OCR-empty chunks (1/10 in a live sample query) — never a missing field. This makes a Pinecone metadata filter viable: `filter={"text": {"$ne": ""}}` reliably excludes empty-text vectors without any ambiguity around missing fields.
+
+Verified live: the same query with and without the filter — without it, 1/10 top_k slots was an empty vector; with it, all 10/10 were real content, and Pinecone backfilled the excluded slot with the next-best real match rather than just shrinking the candidate pool. Confirms this fixes the problem at zero extra latency cost (single query, no re-fetch), unlike increasing `top_k` (dilutes but doesn't remove the problem) or a client-side backfill retry (adds a second round-trip in the common case).
+
+### Decision
+Implement the Pinecone metadata filter (Option A from the options review) rather than a pre-processing re-index (Option B, permanent but requires re-embedding ~2.5M+ vectors) or increasing `top_k` (Option C, adds latency/cost without removing the junk).
+
+### Changes Made
+- **`modeling.py` `search_pinecone`:** added `filter={'text': {'$ne': ''}}` to the `_index.query()` call.
+- **`eval.py` `get_retrieval_context`:** added the same filter, keeping the eval harness's reconstructed retrieval in sync with production (same pattern as every prior round's fixes).
+
+Verified directly: `search_pinecone` on a previously-affected query now returns 10/10 real (non-empty) chunks.
+
+### Validation Results
+
+| Metric | Round 11 | Round 12 |
+|---|---|---|
+| Contextual Relevancy (archive-backed) | 50% (3/6) | 50% (3/6) |
+| Source Attribution | 100% | 100% — held |
+| Conversation Completeness | 75% (3/4) | 100% (4/4) |
+| Referential Coherence | 100% | 75% (3/4) — see new finding below |
+
+**Empty vector fix: working as intended.** This round's only Contextual Relevancy failure (`eval-ht-mixed`, 0.0) is no longer empty-slot or OCR-garbage related — the reasoning cites real, coherent, but topically off-target content (a 1953 Walter White anecdote). This is the separate, longstanding weak spot for this specific query, recurring since Round 1 under different guises each time (embedding confusion, OCR noise, now off-topic real content) — not something this fix targets, and not a regression it caused. Closing the empty-vector-slots issue.
+
+**New finding — Referential Coherence has the same scoring-scale bug Language Consistency had before Round 3.** `convo-en-factretain` scored 0.1 despite the judge's own reasoning describing a fully correct resolution ("correctly resolves this reference... clear continuity... coherent, relevant follow-up"). The `referential_coherence` criteria (`eval.py`) still uses the old ambiguous "Score 1 if... Score 0.5 if... Score 0 if..." phrasing that caused this exact false-negative pattern in Language Consistency (fixed in Round 3 by rescaling to an explicit 0-10 scale). Pre-existing, unrelated to this round's change — just never surfaced until now.
+
+### Remaining Issues (carry forward to Round 13)
+1. **Referential Coherence scoring-scale bug** — needs the same 0-10 rescale treatment Language Consistency got in Round 3. Not yet applied.
+2. **OCR garbage (non-empty but corrupted text)** — chunks with real but heavily corrupted OCR text can still occupy top_k slots and pass the rerank threshold. The Round 1 pre-processing quality filter option (drop chunks below a word-count/non-ASCII-density threshold during a future re-index) targets this.
+3. **`eval-ht-mixed` persistent weak spot** — recurring Contextual Relevancy failures on this specific Haitian Creole query across many rounds, each time for a different proximate reason. Root cause (likely: Creole comparative-phrasing queries embed poorly against this corpus) not yet investigated directly.
+
+---
+
+## Round 13 — Referential Coherence Scoring-Scale Fix (2026-08-31)
+
+### Fix
+Applied the same rescale used for Language Consistency in Round 3: rewrote `referential_coherence`'s `ConversationalGEval` criteria (`eval.py`) from ambiguous "Score 1 if... Score 0.5 if... Score 0 if..." to an explicit "On a scale of 0 to 10... Score 10 if... Score 5 if... Score 0 if..." — removing the scale ambiguity that let the judge interpret "Score 1" as "1 out of 10" and output 0.1 for a response its own reasoning described as fully correct.
+
+### Validation Results
+All four multi-turn scenarios passed Referential Coherence at 1.0 (100% overall, up from 75%). `convo-en-factretain` — the case that previously scored 0.1 despite a "fully correct" reasoning — now scores 1.0 with the same quality of reasoning text, confirming the score now matches what the judge actually describes. Conversation Completeness also 100% this run. Knowledge Retention held stable at 25%, as expected.
+
+**Referential Coherence scoring-scale bug: closed.**

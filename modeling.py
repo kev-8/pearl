@@ -111,7 +111,9 @@ def search_pinecone(query: str) -> str:
         namespace='__default__',
         vector=embeddings[0],
         top_k=_RERANK_FETCH_K,
-        include_metadata=True
+        include_metadata=True,
+        # Exclude OCR-empty phantom vectors so they don't consume top_k slots/
+        filter={'text': {'$ne': ''}},
     )
 
     matches = rerank_matches(query, results.get('matches', []))
