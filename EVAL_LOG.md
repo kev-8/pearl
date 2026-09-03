@@ -545,3 +545,41 @@ Applied the same rescale used for Language Consistency in Round 3: rewrote `refe
 All four multi-turn scenarios passed Referential Coherence at 1.0 (100% overall, up from 75%). `convo-en-factretain` — the case that previously scored 0.1 despite a "fully correct" reasoning — now scores 1.0 with the same quality of reasoning text, confirming the score now matches what the judge actually describes. Conversation Completeness also 100% this run. Knowledge Retention held stable at 25%, as expected.
 
 **Referential Coherence scoring-scale bug: closed.**
+
+---
+
+## Round 14 — `eval-ht-mixed` Root Cause: Creole Query Retrieval Quality (2026-08-31)
+
+### Investigation
+
+Isolated the recurring `eval-ht-mixed` Contextual Relevancy failures with a controlled comparison. The classifier's actual `pinecone_search` sub-question for this query ("Pòtoprens Port-au-Prince istwa antecedents ki jan li te ye anvan" — a mixed-language keyword-stuffed phrase) retrieved pure OCR garbage. Rephrasing the identical information need as a clean, natural **French** question ("Que se passe-t-il à Port-au-Prince aujourd'hui et comment était-ce avant ?") retrieved excellent, directly on-topic content on the first try — including a near-perfect match: *"que c'est le Port-au-Prince d'il y a 40 ans, ou le Port-au-Prince d'aujourd'hui sont tout à fait différents..."* A clean English rephrasing also retrieved well. Two different clean **Creole** rephrasings both retrieved garbled junk — ruling out "bad phrasing" as the explanation; the failure tracks query language, not query quality.
+
+This isn't a blanket "Creole never works" problem, though: `eval-ht-hist`'s Creole query ("American occupation") has consistently retrieved reasonably relevant (if noisy) content across every round. The difference is topic specificity — "American occupation" is a heavily-documented, named historical event with enough signal to survive noisy Creole query embeddings, while "Port-au-Prince now vs. before" is a vague, diffuse comparative theme with no fixed anchor, making it far more vulnerable to whatever quality gap exists for Creole-phrased queries. The content itself clearly exists in the archive (French/English queries found it immediately) — this is a retrieval-language problem, not a corpus-coverage gap.
+
+### Decision
+Scope a translation step narrowly: when the input question is Haitian Creole, have the classifier phrase the `pinecone_search` sub-question in French instead (translating meaning, not transliterating) — the archive is French-dominant and French/English queries already retrieve reliably. English and French inputs are left untouched since they already work well; no reason to touch a working path.
+
+### Changes Made
+- **`modeling.py` `_CLASSIFY_PROMPT`:** added an explicit instruction — Creole input questions get their `pinecone_search` sub-question translated to French; English/French inputs keep their sub-questions in the same language; sub-questions must be natural phrasing, never keyword-stuffed or language-mixed (the original failing sub-question was both).
+
+Verified directly: the classifier now produces "Comment était Port-au-Prince dans le passé, son histoire et son développement" for the Creole `eval-ht-mixed` query, and `eval-ht-hist`'s Creole query similarly gets a French sub-question. The English control query (`eval-en-current`) was unaffected. Running the new French sub-question through `search_pinecone` now returns real, on-topic Port-au-Prince history content instead of garbage.
+
+### Validation Results
+
+First run crashed on an unrelated transient issue: `FaithfulnessMetric`'s claim-extraction call to the judge model returned a stringified JSON array instead of an actual list (`pydantic_core.ValidationError: Input should be a valid list`) — a known LangChain/Anthropic structured-output flakiness, not caused by this change. Re-run succeeded cleanly.
+
+| Metric | Round 12 | Round 14 |
+|---|---|---|
+| Contextual Relevancy (archive-backed) | 50% (3/6) | 67% (4/6) |
+| `eval-ht-mixed` specifically | 0.0 (fail) | **0.76 (pass)** — first pass ever recorded for this query |
+| `eval-ht-hist` specifically | — | 0.79 (pass) — held steady with its French sub-question |
+| Conversation Completeness | 100% | 100% |
+| Referential Coherence | 100% | 100% |
+| Knowledge Retention | 25% | 25% — stable |
+
+**`eval-ht-mixed`: first pass ever.** The reasoning cites exactly the comparative content this query has been chasing since Round 1: *"PORT-AU-PRINCE de 1900 était douce et tumultueuse"* and *"After 16 years of absence... Port-au-Prince has changed a lot"* — directly on-topic "now vs. before" content, found via the new French sub-question. `eval-ht-hist` held at a consistent pass with its French sub-question too, confirming the change didn't regress the Creole query that was already working. The two remaining Contextual Relevancy failures (`eval-en-hist`, `eval-fr-mixed`) are unrelated English/French queries hitting the pre-existing, already-documented OCR/off-topic noise pattern — not connected to this fix.
+
+**`eval-ht-mixed` persistent weak spot: closed.**
+
+### Remaining Issues (carry forward to Round 15)
+1. **OCR garbage (non-empty but corrupted text)** — chunks with real but heavily corrupted OCR text can still occupy top_k slots and pass the rerank threshold, causing the recurring Contextual Relevancy noise seen across many queries (not specific to Creole). The Round 1 pre-processing quality filter option (drop chunks below a word-count/non-ASCII-density threshold during a future re-index) targets this — still the only unaddressed item on the backlog.

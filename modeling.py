@@ -181,6 +181,13 @@ class ClassificationResult(BaseModel):
         description="List of agents to invoke with their targeted sub-questions"
     )
 
+# NOTE: the Creole->French translation instruction below relies on the current
+# archive's Creole content (Radio Haiti transcripts) being code-switched with
+# French, so a French-phrased query still has a French anchor to match against.
+# If a future archive addition is Creole-only with no French code-switching,
+# re-test retrieval quality for it before assuming this still gives full
+# recall — see EVAL_LOG.md Round 14 and the "Creole Query Translation Caveat"
+# memory for the diagnosis and a documented (not yet needed) mitigation.
 _CLASSIFY_PROMPT = (
     "You route user questions about Haiti to the right knowledge sources:\n"
     "- `pinecone_search`: historical information from Le Nouvelliste, Haiti's oldest newspaper "
@@ -188,7 +195,14 @@ _CLASSIFY_PROMPT = (
     "social events, named figures, and places documented in the archive.\n"
     "- `web_search`: current events, recent context, or topics unlikely to appear in historical "
     "newspaper archives (e.g., post-2020 events, technical/scientific topics, comparative context).\n"
-    "For each relevant source, write a targeted sub-question optimized for that source's strengths. "
+    "For each relevant source, write a targeted sub-question optimized for that source's strengths, "
+    "as a natural, well-formed question or phrase — never keyword-stuffed or mixing languages.\n"
+    "If the input question is in Haitian Creole, phrase the `pinecone_search` sub-question in French "
+    "instead (translate the meaning; do not transliterate). The archive is French-dominant and "
+    "retrieval quality against it is measurably worse for Creole-phrased queries, even on topics the "
+    "archive covers well. Keep `web_search` sub-questions in whichever language will find the best "
+    "results (usually English). For English or French input questions, keep sub-questions in that "
+    "same language.\n"
     "Only return sources that are genuinely relevant."
 )
 
