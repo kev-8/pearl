@@ -583,3 +583,71 @@ First run crashed on an unrelated transient issue: `FaithfulnessMetric`'s claim-
 
 ### Remaining Issues (carry forward to Round 15)
 1. **OCR garbage (non-empty but corrupted text)** — chunks with real but heavily corrupted OCR text can still occupy top_k slots and pass the rerank threshold, causing the recurring Contextual Relevancy noise seen across many queries (not specific to Creole). The Round 1 pre-processing quality filter option (drop chunks below a word-count/non-ASCII-density threshold during a future re-index) targets this — still the only unaddressed item on the backlog.
+
+---
+
+## Round 15 — OCR Re-Index: Scope (2026-09-07)
+
+Not yet implemented — this documents the scoped plan before starting, given the size of the undertaking (~2.5M chunks, full re-embed).
+
+### Current pipeline facts relevant to scoping
+- `preproc.py::chunk_dataframe` already has one chunk-level quality filter (`"URL not found"` chunks dropped, line 119) — the new filter extends this same pattern/location.
+- `dloc/text_processing.py::clean_ocr_text` already strips control chars/OCR symbol noise and explicitly preserves French/Creole diacritics — the garbage that survives to production isn't symbol noise, it's OCR that produced plausible-looking but wrong letters/words (e.g. "Ihewefc TANWS QUE IES STATIST3QUES"), which only a word/language-quality signal can catch, not a character-class filter.
+- Precedent for a word-count-based OCR quality signal already exists: `dloc/ocr_compare.py::compare_ocr_quality` (used for the original 29-year Tesseract gap-fill).
+- No re-scraping/re-OCR/re-transcription needed — `article_text` is already extracted in the existing CSVs. This is a filter-and-re-embed job.
+- Scale: ~2.3M vectors (Le Nouvelliste) + ~181K (Radio Haïti) ≈ 2.5M chunks to re-chunk, filter, re-embed, re-upsert.
+
+### The cutover problem
+Pinecone IDs are sequential (`chunk-0`, `chunk-1`, ...) and upsert overwrites by ID. A filter that drops chunks produces fewer chunks than before — reusing the same ID prefix would overwrite the first N vectors correctly but orphan the old tail (still-garbage vectors past the new run's shorter length) in the index.
+
+### Decisions
+- **Cutover strategy: namespace blue-green.** Re-index into a new Pinecone namespace (`__default__` stays live), validate with `eval.py` pointed at the new namespace, flip `modeling.py`'s `namespace=` in one line once confirmed, delete the old namespace after. Zero downtime, trivial rollback. Rejected alternative: new ID prefix + explicit delete-by-prefix cleanup in `__default__` — works but no easy rollback, more bookkeeping.
+- **Filter calibration: sample + hand-tune first**, not blind thresholds. Pull a few hundred chunks (known-garbage examples already logged in Rounds 1, 2, 11 of this file, plus known-good noisy chunks) and tune precision/recall before running at full scale. Heuristic: minimum word count + garbled-word ratio (dictionary-match or vowel/consonant heuristic) — explicitly **not** a raw non-ASCII byte-density filter, which would incorrectly penalize legitimate French/Creole accented text and regress the Round 14 Creole-retrieval fix.
+
+### Phases
+1. Design + calibrate the filter against a sample.
+2. Re-chunk both corpora with the filter (fast, CPU-only, no API cost) — establishes actual chunk-count reduction.
+3. Re-embed filtered chunks via Cohere (the slow/costly part — Radio Haïti's 181K chunks took under an hour originally; Le Nouvelliste at ~13x the size scales to roughly half a day, likely less after filtering).
+4. Upsert into the new namespace.
+5. Validate via `eval.py` against the new namespace before cutover, specifically re-checking the OCR-garbage examples from Rounds 1, 2, 11.
+6. Cutover: flip `modeling.py`'s namespace, confirm in production, delete the old namespace.
+
+### Status
+Scoped, not started. Next step is Phase 1 (filter design + calibration) when picked up.
+
+---
+
+## Round 16 — OCR Re-Index Phase 1: Filter Design + Calibration Complete (2026-09-07)
+
+### What was built
+- `quality_filter_candidate.py` — `score_chunk_quality()`, a stdlib-only heuristic (mixed digit+letter tokens, long consonant runs, unexplained short tokens outside a French+Creole allowlist, word-length bounds) plus an optional `wordfreq`-based French rescue signal, asymmetric by design (can only rescue a borderline "drop" to "keep," never push "keep" to "drop," so it can't penalize Creole content `wordfreq` doesn't cover).
+- `preproc_quality_filter_calibration.py` — calibration harness: a hand-labeled seeded set (known garbage/legit/out-of-scope examples, several pulled by exact row+anchor from the real CSVs) plus an unlabeled random sample of ~300 articles/corpus (~36K Le Nouvelliste chunks, ~12K Radio Haïti chunks). Writes `quality_filter_calibration_report.csv`. Both files are scratch/staging, not wired into `preproc.py`.
+
+### A real bug found and fixed
+The tokenizer regex only matched pure-letter runs, so a token like `"STATIST3QUES"` silently split into `"STATIST"` + `"QUES"` at the digit boundary before the mixed-alnum check ever saw it — the signal the design called "strongest" was non-functional. Fixed by including digits in the token pattern.
+
+### Calibration findings
+- **MIN_TOKENS tuning:** tried raising 4→6 to catch short ad chunks (`"HAITIAN MOTORS. S.A."` = 4 tokens); hand-review of the unlabeled sample found this also drops legitimate short chunk-boundary fragments (`"hommes, membres presumes"`, `"de Samarie (Cisjordanie)... SAN SALVADOR"`). Reverted to 4 — token count alone can't separate "short ad copy" from "short legitimate fragment." Short ad chunks are left to the existing rerank-score threshold (`_RERANK_MIN_SCORE`, Round 3) to suppress at retrieval time instead.
+- **Threshold ceiling, confirmed not just asserted:** checked what lowering `GARBLE_SCORE_THRESHOLD` to catch the two remaining borderline misses would sweep in — 17,624 of 48,504 sampled chunks (36%) sit in the 0.12-0.35 score band, and it's a genuine mix of real Le Nouvelliste garble alongside entirely legitimate, naturally-choppy Radio Haïti Creole speech (including content referencing "makout" — a real Tonton Macoute reference, clearly valuable). Lowering the threshold further was rejected on this evidence, not left untried.
+- **New finding, not previously documented:** Radio Haïti's dominant garbage pattern is Whisper hallucination — a single syllable or word repeated hundreds of times to fill a chunk (`"MI MI MI MI..."` ×166, or as one giant run-on token: `"eyseyseysey..."`). Structurally different from Le Nouvelliste's OCR letter-substitution garble. Hand-review of every chunk the filter dropped from the Radio Haïti unlabeled sample found 100% were this pattern — zero false positives found.
+- **wordfreq negative result:** directly compared French word-hit-rate for confirmed garbage vs. confirmed-clean text — `row9489`/`row1662` (real garbage, individually-real French words assembled into an OCR-scrambled sentence) score 0.84/0.85; `row5674` (confirmed clean French) scores 0.86 — statistically indistinguishable. Word-frequency/dictionary scoring cannot separate this class of garble from legitimate text; would need sequence-level language modeling (much bigger scope than Phase 1).
+
+### Decisions (user-approved)
+Five examples accepted as out-of-scope for this filter, tracked in the calibration script (`KNOWN_OUT_OF_SCOPE_STRINGS` / `*_KNOWN_ROWS` with `seed_type="known_out_of_scope"`) but excluded from the precision/recall calculation, which now measures only what the heuristic is actually designed to catch:
+- `row9489_garble`, `row1662_garble` — partial word-level corruption in an otherwise-real sentence; needs sequence-level modeling, not a cheap heuristic. **Accepted as a known limitation.**
+- `ad_haitian_motors`, `mixed_case_digit` — catchable only by a threshold change proven (above) to sweep in ~36% of the corpus with heavy legitimate-content false positives. **Accepted.**
+- `eval_ht_mixed_0` — the one example confirmed to have caused a real eval failure (Round 11, Contextual Relevancy 0.0). Its French hit-rate (0.40) is below 3 legitimate Creole reference points (0.66-0.98), but that margin is too thin (only 3 data points) to trust a symmetric wordfreq penalty against under-sampled Creole content. **Left uncaught for Phase 1** — also mitigated somewhat by the Round 14 fix, which now translates Creole queries to French before retrieval, changing how often this exact chunk would surface.
+
+### Results
+
+| Metric | Value |
+|---|---|
+| Seeded set precision | 100% (4/4 known-garbage caught, 0 false positives) |
+| Seeded set recall | 100% (of the in-scope set) |
+| Le Nouvelliste drop rate (unlabeled sample) | 1.46% |
+| Radio Haïti drop rate (unlabeled sample) | 1.21% |
+
+Both drop rates are far more conservative than the loose 10-30% estimate floated earlier in scoping — this is a narrow, high-precision filter, not an aggressive one, by deliberate design given the false-positive evidence above.
+
+### Status
+**Phase 1 complete.** Ready for Phase 2 (full re-chunk + re-embed + namespace blue-green cutover, per Round 15's scope) when picked up — insertion point already identified (`preproc.py` line 119, in lockstep with `chunk_row_indices` per the alignment-bug note from Round 15's planning pass). Not started in this round.
