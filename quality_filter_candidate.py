@@ -71,6 +71,30 @@ RESCUE_BAND_LOW = 0.25
 RESCUE_BAND_HIGH = 0.5
 RESCUE_HIT_RATE_THRESHOLD = 0.6
 
+# Round 17 additions — two independent high-precision "drop" triggers, kept
+# separate from garble_score because both have a wide, empirically-verified
+# margin and are cheaper/clearer to reason about as hard rules.
+#
+# Repetition loops: the dominant garbage pattern by volume. Corpus-wide
+# shingle counts found "mi mi mi mi mi mi" (3869x), "their their their..."
+# (3426x), "kw kw kw..." (2527x) etc. — Whisper hallucination filling a chunk
+# with one repeated token, plus the "Plus Plus Plus..." pattern that broke
+# eval-ht-yesno-founding in Round 17.
+# Threshold safety check (max single-token share of a chunk): every
+# known-legitimate seeded example scores <= 0.125 — INCLUDING the Creole
+# rhetorical-repetition rows (745: 0.069, 1176: 0.083), whose repetition is
+# phrase-level rather than single-token-dominant. Real repetition-loop
+# garbage runs 0.3-0.5+. 0.4 leaves a ~3x margin over the worst legit case.
+MAX_TOKEN_REPETITION_RATIO = 0.4
+MIN_TOKENS_FOR_REPETITION_CHECK = 8  # below this, repetition isn't meaningful
+
+# Non-Latin script: Whisper also hallucinates whole chunks in other scripts
+# (corpus scan found "ا ا ا ا ا ا" repeated 3000+ times). French/Creole live
+# entirely within Latin + Latin Extended-A/B (<= U+024F), so anything beyond
+# that dominating a chunk is transcription failure, not archive content.
+MAX_NON_LATIN_RATIO = 0.3
+_LATIN_MAX_CODEPOINT = 0x24F
+
 
 def _longest_consonant_run(token: str) -> int:
     """Longest run of consecutive alphabetic non-vowel characters."""
@@ -86,6 +110,35 @@ def _longest_consonant_run(token: str) -> int:
 
 def _normalize_token(t: str) -> str:
     return t.lower().replace("’", "'")
+
+
+def token_repetition_ratio(tokens: list[str]) -> float:
+    """Share of the chunk taken by its single most frequent token.
+
+    Detects transcription repetition loops ("mi mi mi mi..."). Returns 0.0
+    for short chunks, where a high ratio is a normal artifact of length
+    rather than evidence of a loop.
+    """
+    if len(tokens) < MIN_TOKENS_FOR_REPETITION_CHECK:
+        return 0.0
+    counts: dict[str, int] = {}
+    for t in tokens:
+        key = _normalize_token(t)
+        counts[key] = counts.get(key, 0) + 1
+    return max(counts.values()) / len(tokens)
+
+
+def non_latin_ratio(text: str) -> float:
+    """Share of alphabetic characters outside Latin/Latin-Extended.
+
+    French and Haitian Creole are fully representable within <= U+024F, so a
+    high ratio means the transcriber emitted another script entirely.
+    """
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return 0.0
+    non_latin = sum(1 for ch in letters if ord(ch) > _LATIN_MAX_CODEPOINT)
+    return non_latin / len(letters)
 
 
 def french_rescue_signal(tokens: list[str]) -> float:
@@ -116,7 +169,8 @@ def score_chunk_quality(text: str, use_french_rescue: bool = False) -> dict:
             "verdict": "drop", "reason": "no_words", "score": 1.0, "n_tokens": 0,
             "avg_word_len": 0.0, "mixed_alnum_ratio": 0.0,
             "consonant_run_ratio": 0.0, "short_unexplained_ratio": 0.0,
-            "french_rescue_score": 0.0, "rescued": False,
+            "repetition_ratio": 0.0, "non_latin_ratio": 0.0,
+            "hard_trigger": None, "french_rescue_score": 0.0, "rescued": False,
         }
 
     mixed_alnum = sum(1 for t in tokens if _MIXED_ALNUM_RE.match(t))
@@ -140,6 +194,9 @@ def score_chunk_quality(text: str, use_french_rescue: bool = False) -> dict:
     if avg_word_len < AVG_WORD_LEN_MIN or avg_word_len > AVG_WORD_LEN_MAX:
         garble_score += 0.3
 
+    repetition_ratio = token_repetition_ratio(tokens)
+    nonlatin_ratio = non_latin_ratio(text)
+
     verdict = "drop" if (n < MIN_TOKENS or garble_score > GARBLE_SCORE_THRESHOLD) else "keep"
 
     rescue_score = 0.0
@@ -151,6 +208,18 @@ def score_chunk_quality(text: str, use_french_rescue: bool = False) -> dict:
                 verdict = "keep"
                 rescued = True
 
+    # Independent hard triggers, applied AFTER the French rescue so a
+    # repetition loop or wrong-script chunk can never be rescued back in
+    # (wordfreq would happily match a chunk of one repeated real word).
+    hard_trigger = None
+    if repetition_ratio > MAX_TOKEN_REPETITION_RATIO:
+        hard_trigger = "repetition_loop"
+    elif nonlatin_ratio > MAX_NON_LATIN_RATIO:
+        hard_trigger = "non_latin_script"
+    if hard_trigger:
+        verdict = "drop"
+        rescued = False
+
     return {
         "verdict": verdict,
         "score": round(garble_score, 4),
@@ -159,6 +228,9 @@ def score_chunk_quality(text: str, use_french_rescue: bool = False) -> dict:
         "mixed_alnum_ratio": round(mixed_alnum_ratio, 4),
         "consonant_run_ratio": round(consonant_run_ratio, 4),
         "short_unexplained_ratio": round(short_ratio, 4),
+        "repetition_ratio": round(repetition_ratio, 4),
+        "non_latin_ratio": round(nonlatin_ratio, 4),
+        "hard_trigger": hard_trigger,
         "french_rescue_score": round(rescue_score, 4),
         "rescued": rescued,
     }

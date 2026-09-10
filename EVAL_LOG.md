@@ -684,3 +684,35 @@ This changes the earlier "wait and see" framing — the case for the LLM-based q
 
 ### Status
 Decision point reached, not yet acted on. Next step (if pursued): design and calibrate the LLM-based classifier (same calibration discipline as Phase 1 — seeded known examples, precision/recall against them, hand-review of a real sample) before running it at full corpus scale.
+
+---
+
+## Round 18 — Free Signals: Repetition Loops + Non-Latin Script (2026-09-10)
+
+### Motivation
+Round 17 justified an LLM-based classifier on cost/benefit, but the budget for it was capped well below the earlier ~$200-500 estimate. Before spending anything, exhausted the zero-cost options first.
+
+### Finding: repetition is the dominant garbage pattern, and it's free to detect
+Corpus-wide 6-word shingle counts over the 48K-chunk sample found the top repeated sequences are all transcription loops: `"mi mi mi mi mi mi"` (3,869x), `"their their their their their their"` (3,426x), `"kw kw kw kw kw kw"` (2,527x), `"kultur kultur..."` (2,438x), plus Whisper emitting Arabic script (`"ا ا ا ا ا ا"`, 3,748x). None of these need an LLM to identify.
+
+### Changes Made
+Added two independent high-precision hard-drop triggers to `quality_filter_candidate.py` (`token_repetition_ratio`, `non_latin_ratio`), applied *after* the French rescue so a repetition loop can't be rescued back in (wordfreq happily matches a chunk of one repeated real word).
+
+**Threshold safety, verified not guessed:** every known-legitimate seeded example scores <= 0.125 on repetition ratio — *including* the Creole rhetorical-repetition rows (745: 0.069, 1176: 0.083), whose repetition is phrase-level rather than single-token-dominant. Real loops run 0.3-1.0. Set `MAX_TOKEN_REPETITION_RATIO = 0.4`, a ~3x margin over the worst legitimate case.
+
+### Results
+- Radio Haïti drop rate: **1.21% → 5.31%** (4.4x). Le Nouvelliste unchanged at 1.46% — correct, since repetition loops are a Whisper artifact and Le Nouvelliste is OCR.
+- Seeded set precision/recall held at **100%/100%** — no legitimate example regressed.
+- 607 new hard-trigger catches in the sample (589 repetition, 18 non-Latin). Hand-reviewed the 12 lowest-`garble_score` catches (i.e. those the previous filter was definitely keeping): **all 12 unambiguous garbage** (`"Scripture Scripture Scripture..."`, `"half half half..."`, `"Kultur Kultur..."`). Zero false positives found.
+
+### Deliberately NOT done (two judgment calls)
+1. **Did not lower the repetition threshold below 0.4.** The 0.30-0.32 band is genuinely mixed: clear garbage (`"MI MI MI..."`, `"eyes eyes eyes..."`) sits alongside plausibly-legitimate Creole songs/chants (`"Aïti éto, Aïti éto"`, `"ago ago Di bibi lo"`) — real broadcast content that repeats by nature. Chasing the extra garbage here risks exactly the kind of Creole-content false positive Round 14 was fixed to avoid.
+2. **Did not add a Whisper-watermark blocklist as a drop rule.** Found subtitle-boilerplate hallucinations leaked from Whisper's training data (`"Altyazı M.K."` in 48 kept chunks, `"ST' 501 Sous-titrage"` in 68). Tempting to drop on sight — but inspection showed some chunks carry the watermark as a *prefix followed by genuine Creole content*, so dropping the chunk would destroy real archive material. This is a **text-cleaning** task (strip the watermark substring), not a filtering one. Logged for Phase 2; `radiohaiti/build.py` currently applies no cleaning pass at all (confirmed Round 15), so there's a natural place for it.
+
+### Status
+Free signals complete. Note these take effect only at re-index time (Phase 2) — the filter is still scratch/staging and not wired into the live retrieval path, so this round's gains are **not** yet observable in `eval.py` results.
+
+### Remaining Issues (carry forward)
+1. **Distillation classifier** — approved approach for the remaining garble classes the heuristic can't reach (partial word-level corruption): LLM-label a few thousand chunks (~$1-5 via Batch API), train a local classifier on the embeddings the re-index computes anyway, run free over all 2.5M chunks. Not started.
+2. **Whisper watermark stripping** — cleaning task for Phase 2 (see above).
+3. **Phase 2 itself** — full re-chunk + re-embed + namespace blue-green cutover.
