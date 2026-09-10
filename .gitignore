@@ -1,6 +1,8 @@
 .DS_Store
 *.json
 *_embeddings_checkpoint*.jsonl
+quality_distill_requests.jsonl
+*.npy
 *_upsert_progress.txt
 *.csv
 *.gif

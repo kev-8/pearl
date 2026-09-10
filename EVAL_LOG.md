@@ -713,6 +713,52 @@ Added two independent high-precision hard-drop triggers to `quality_filter_candi
 Free signals complete. Note these take effect only at re-index time (Phase 2) — the filter is still scratch/staging and not wired into the live retrieval path, so this round's gains are **not** yet observable in `eval.py` results.
 
 ### Remaining Issues (carry forward)
-1. **Distillation classifier** — approved approach for the remaining garble classes the heuristic can't reach (partial word-level corruption): LLM-label a few thousand chunks (~$1-5 via Batch API), train a local classifier on the embeddings the re-index computes anyway, run free over all 2.5M chunks. Not started.
+1. **Distillation classifier** — ✅ built, see Round 19.
 2. **Whisper watermark stripping** — cleaning task for Phase 2 (see above).
 3. **Phase 2 itself** — full re-chunk + re-embed + namespace blue-green cutover.
+
+---
+
+## Round 19 — Distillation Classifier: Built and Measured (2026-09-10)
+
+### What was built
+- `quality_distill_label.py` — samples real chunks via the production chunker, batches 20/call, labels them with Claude Haiku 4.5 through the **Batch API** (50% off). Has a mandatory `--dry-run` cost estimate before anything is submitted.
+- `quality_distill_train.py` — embeds the labeled chunks with the same Cohere model/`input_type` the index uses, trains logistic regression on those vectors, and reports metrics **alongside the existing free heuristic on the same held-out set** as a baseline.
+
+**Actual cost: $0.50** for 5,000 labels (dry-run estimate was accurate; 250 batched calls, 0 failures). That is 0.25% of the original ~$200 LLM-classifier estimate. Embedding the labeled sample added ~$0.10.
+
+Design note: training on embeddings means that at Phase 2 re-index time the classifier runs over all ~2.5M chunks at **zero marginal cost** — the re-index computes those vectors anyway, so there's no per-chunk API call and no second corpus pass.
+
+### Major finding: Le Nouvelliste is far worse than the heuristic could see
+
+| Source | COHERENT | GARBLED | BOILERPLATE |
+|---|---|---|---|
+| Le Nouvelliste | 53.5% | **38.1%** | 8.5% |
+| Radio Haïti | 84.6% | 14.9% | 0.5% |
+
+~47% of Le Nouvelliste chunks are unusable (garbled OCR or contentless ad/classified/masthead boilerplate) — against a free-heuristic drop rate of 1.46%. Hand-inspected a random sample of the labels to confirm they weren't over-flagging: they hold up (`"SanDIpsejIS IY SP JawUNWIg SNOLLOVSNVUL"` scrambled OCR, `"ou de la tyistesse gjunirals hors d@ proporliand"` corrupted French; BOILERPLATE catches are genuine classified ads, lottery tables, bylines). Radio Haïti is much cleaner, consistent with Whisper transcription being higher-fidelity than 20th-century newsprint OCR.
+
+### Results — classifier vs. free heuristic (same held-out 25%)
+
+| | precision (drop) | recall (drop) |
+|---|---|---|
+| Embedding classifier @ 0.5 | 0.711 | **0.809** |
+| Free heuristic (Round 18) | **0.958** | 0.094 |
+
+The classifier catches **8.6x more garbage**, but at the default threshold its 71% precision means ~29% of what it drops is legitimate content.
+
+### Threshold tradeoff (held-out set)
+
+| threshold | precision | recall | % corpus dropped | good content lost |
+|---|---|---|---|---|
+| 0.50 | 0.711 | 0.809 | 44.3% | 21.0% |
+| 0.70 | 0.840 | 0.614 | 28.5% | 7.5% |
+| 0.80 | 0.869 | 0.435 | 19.5% | 4.2% |
+| 0.85 | 0.903 | 0.326 | 14.1% | 2.2% |
+| 0.90 | 0.936 | 0.181 | 7.5% | 0.8% |
+| 0.95 | 0.967 | 0.060 | 2.4% | 0.1% |
+
+**The errors are not symmetric.** Garbage left in the index gets a second filter at query time (Cohere rerank + `_RERANK_MIN_SCORE`, Round 3), but legitimate content dropped at index time is gone until the next full re-index. That asymmetry argues for a high-precision operating point even at the cost of recall.
+
+### Status
+Built and measured; **threshold not yet chosen** — that's a judgment call about how much real archive material is acceptable to lose, pending user decision. Not wired into `preproc.py`, not run at corpus scale.
