@@ -651,3 +651,36 @@ Both drop rates are far more conservative than the loose 10-30% estimate floated
 
 ### Status
 **Phase 1 complete.** Ready for Phase 2 (full re-chunk + re-embed + namespace blue-green cutover, per Round 15's scope) when picked up — insertion point already identified (`preproc.py` line 119, in lockstep with `chunk_row_indices` per the alignment-bug note from Round 15's planning pass). Not started in this round.
+
+---
+
+## Round 17 — Eval Query Expansion: Is the Garbage Problem Actually Common? (2026-09-09)
+
+### Motivation
+
+Before investing in an LLM-based quality classifier (discussed after Round 16 — a ~$200-500 corpus-wide pass to catch garble classes the cheap heuristic can't reach), the case for it rested on 5 known examples, only one of which (`eval_ht_mixed_0`) was confirmed to have caused a real eval failure. `eval.py`'s suite had only 7 single-turn queries — too narrow to know whether corruption-driven retrieval failures are common or rare in practice, especially post-Round-14 (Creole→French query translation may have already reduced exposure).
+
+### Changes Made
+Expanded `TEST_QUERIES` (7→17) and `CONVO_SCENARIOS` (4→7) in `eval.py`, adding 10 new single-turn and 3 new multi-turn Haitian Creole queries deliberately varied across: question type (yes/no, causal, open-ended, comparative, definitional), historical vs. current-affairs topics (including eras not previously covered: 1806 Dessalines death, 1937 Parsley Massacre, Duvalier dictatorship, 2010 earthquake), single- vs. mixed-source expectation, Creole/French code-switching (within both single-turn queries and multi-turn follow-ups), and register (standard vs. informal/slang/texting-style).
+
+### Results
+
+**Contextual Relevancy dropped to 40% (6/15 archive-backed cases)**, down from the ~85-100% the narrow original suite was showing. Of the 9 failures:
+- **4 (~27% of all archive-backed queries) were corruption/garbage-driven** — confirmed by explicit judge reasoning, not inferred:
+  - `eval-fr-mixed` (Port-au-Prince economy, **French**) — 0.15, the worst score in the run. Reasoning cites "lottery advertisements... ice cream advertisements... corrupted text fragments ('P at les p', 'inarques des public haitien par De siie 3')."
+  - `eval-ht-yesno-founding` (Dessalines, 1806) — 0.62, reasoning cites "corrupted or meaningless filler content" with a repeated "Plus Plus Plus..." pattern — the same repetition-loop failure mode Round 16 found in Radio Haïti.
+  - `eval-ht-slang-compare` (earthquake comparison) — 0.0, reasoning explicitly notes "garbled or corrupted text that provides no meaningful information."
+  - `eval-ht-definitional` (restavek) — 0.59, reasoning flags "unexplained interjections like 'Nprunta!! Tata Nprunta!'" and "unclear meaning" fragments.
+- 4 failures were pre-existing topical drift (off-topic but coherent real content — Dominican Republic/Trujillo history bleeding into Duvalier/Parsley-Massacre queries, WWII Yugoslavia, banana production), already documented since Round 1, not new.
+- 1 failure (`eval-ht-earthquake-fact`) was an archive coverage gap, not a quality problem — the archive has no 2010 content (ends ~2002).
+
+Multi-turn: all three new Creole scenarios passed Conversation Completeness and Referential Coherence at 100%; Knowledge Retention held at the expected structural rate (only fact-stating scenarios trigger it).
+
+### Conclusion
+
+**The garbage-exposure problem is real and recurring, not a one-off tied to a single known example** — the earlier 5-example evidence base understated its prevalence because the original 7-query suite was too narrow to surface it. It's also **not Creole-specific**: the single worst score in this run was a French query, meaning the underlying corpus-quality problem (OCR noise, ad copy, repetition loops) affects the whole corpus, not just the query-language blind spot Round 14 addressed.
+
+This changes the earlier "wait and see" framing — the case for the LLM-based quality classifier (~$200-500 for a full corpus pass, per the post-Round-16 discussion) is now backed by a real, measured ~27% failure-contribution rate on a diverse query sample, not just one confirmed incident.
+
+### Status
+Decision point reached, not yet acted on. Next step (if pursued): design and calibrate the LLM-based classifier (same calibration discipline as Phase 1 — seeded known examples, precision/recall against them, hand-review of a real sample) before running it at full corpus scale.

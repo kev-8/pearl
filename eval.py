@@ -261,6 +261,81 @@ TEST_QUERIES: list[tuple[str, list[str], str]] = [
         ["pinecone_search", "web_search"],
         "eval-ht-mixed",
     ),
+
+    # ── Haitian Creole diversity expansion ──────────────────────────────────
+    # Added to measure real-world frequency of garbage-driven retrieval
+    # failures across varied query shapes (see EVAL_LOG.md discussion after
+    # Round 16) — before deciding whether an LLM-based quality classifier is
+    # worth building, or whether Round 14's Creole->French translation fix
+    # plus the existing structural filter already cover most real usage.
+    # Deliberately varies: question type, historical vs. current topic,
+    # single-source vs. mixed-source expectation, code-switching, and
+    # register (standard vs. informal/slang).
+
+    # Yes/no factual — historical, standard register
+    (
+        "Èske Desalin te mouri nan Pon Wouj an 1806?",
+        ["pinecone_search"],
+        "eval-ht-yesno-founding",
+    ),
+    # Causal ("why") — current affairs, Creole/French code-switch
+    (
+        "Poukisa gang yo pran kontwòl Pòtoprens, e ki impact sa gen sou la "
+        "population ki rete la?",
+        ["web_search"],
+        "eval-ht-causal-codeswitch",
+    ),
+    # Open-ended/broad — historical, standard register, no prior context
+    (
+        "Pale m sou diktati Duvalier yo.",
+        ["pinecone_search"],
+        "eval-ht-openended-duvalier",
+    ),
+    # Comparative — informal/slang register, spans historical + current
+    (
+        "Kouman lavi a ap ye kounye a Ayiti konpare ak anvan tranblemanntè "
+        "2010 la, tu wè?",
+        ["pinecone_search", "web_search"],
+        "eval-ht-slang-compare",
+    ),
+    # Definitional — cultural/historical topic, standard register
+    (
+        "Kisa 'restavek' vle di nan kilti ayisyen an?",
+        ["pinecone_search"],
+        "eval-ht-definitional",
+    ),
+    # Factual — current affairs, texting-style informal orthography/punctuation
+    (
+        "kisa k ap pase ak eleksyon yo an ayiti kounye a???",
+        ["web_search"],
+        "eval-ht-informal-elections",
+    ),
+    # Factual — historical, different era than existing queries (1937, not
+    # the occupation/Duvalier periods already covered elsewhere)
+    (
+        "Ki sa ki te pase pandan Maskr Pèsi a nan 1937?",
+        ["pinecone_search"],
+        "eval-ht-massacre1937",
+    ),
+    # Comparative — spans historical + current, standard register
+    (
+        "Ki diferans genyen ant sitiyasyon politik jodi a ak sa ki te genyen "
+        "anba Duvalier?",
+        ["pinecone_search", "web_search"],
+        "eval-ht-comparative-duvalier-today",
+    ),
+    # Vague/broad — current affairs, heavy slang + English loanword code-switch
+    (
+        "kap pase nan peyi a fr, tout bagay tounen mal?",
+        ["web_search"],
+        "eval-ht-slang-current",
+    ),
+    # Specific factual (number/date) — event outside archive coverage window
+    (
+        "Konbyen moun ki te mouri nan tranblemanntè 12 janvye 2010 la?",
+        ["web_search"],
+        "eval-ht-earthquake-fact",
+    ),
 ]
 
 
@@ -481,6 +556,57 @@ CONVO_SCENARIOS: list[tuple[list[str], str, str, str]] = [
         "Pearl retains that the user's focus is Cap-Haïtien, resolves 'there' "
         "correctly, and does not ask which city they mean or default to discussing "
         "Port-au-Prince.",
+    ),
+
+    # ── Haitian Creole diversity expansion (multi-turn / prior-context) ────
+    # Companion to the single-turn Creole expansion above — same measurement
+    # goal, specifically covering the "prior context" dimension (does a
+    # follow-up in a different register/language than the opener still
+    # resolve correctly) that single-turn queries can't test.
+
+    # Current affairs — informal follow-up, open causal/predictive question
+    (
+        [
+            "Kisa k ap pase ak sitiyasyon sekirite a Pòtoprens?",
+            "E dapre ou, kilè sa ka regle?",
+        ],
+        "convo-ht-security",
+        "Itilizatè a mande sou sitiyasyon sekirite Pòtoprens kounye a, epi li "
+        "poze yon kesyon swivi enfòmèl ki mande yon opinyon sou kilè "
+        "sitiyasyon an ka regle.",
+        "Pearl konprann kontèks lan soti nan premye repons lan epi li bay yon "
+        "repons ki koherant sou pèspektiv/tandans, san li pa mande "
+        "klarifikasyon sou ki 'sitiyasyon' n ap pale.",
+    ),
+    # Historical — follow-up code-switches into French mid-sentence
+    (
+        [
+            "Ki moun ki te lidè Revolisyon Ayisyen an?",
+            "Ki wòl Toussaint Louverture te jwe la-dan, et comment il est mort?",
+        ],
+        "convo-ht-revolution-codeswitch",
+        "Itilizatè a mande ki moun ki te lidè Revolisyon Ayisyen an, apre sa li "
+        "poze yon kesyon swivi ki kòmanse an kreyòl men ki chanje pou fini an "
+        "franse nan menm fraz la.",
+        "Pearl rekonèt referans a Revolisyon Ayisyen an atravè de lang yo, "
+        "epi li reponn ak enfòmasyon sou wòl Toussaint Louverture ak jan li "
+        "te mouri, san li pa pèdi kontèks lan akoz chanjman lang lan.",
+    ),
+    # Historical, comparative/opinion — informal command-style opener
+    (
+        [
+            "Bay m enfo sou Jean-Claude Duvalier.",
+            "Konpare l ak papa l la, kilès ki te pi mal?",
+        ],
+        "convo-ht-duvalier-compare",
+        "Itilizatè a mande enfòmasyon sou Jean-Claude Duvalier nan yon fòm "
+        "enfòmèl (kòmandman), apre sa li mande yon konparezon ak papa l "
+        "(François Duvalier) ki mande yon jijman/opinyon.",
+        "Pearl bay kontèks sou Jean-Claude Duvalier nan premye repons lan, "
+        "epi nan dezyèm repons lan li konprann 'li' ak 'papa l' kòm Jean-Claude "
+        "ak François Duvalier, li bay yon konparezon ki baze sou "
+        "enfòmasyon istorik san li pa refize repond akoz kesyon an mande yon "
+        "jijman.",
     ),
 ]
 
