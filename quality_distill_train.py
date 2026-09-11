@@ -32,6 +32,16 @@ SEED = 42
 # "Bad" = anything the retrieval index is better off without.
 POSITIVE_LABELS = {"GARBLED", "BOILERPLATE"}
 
+# Chosen from the held-out precision/recall sweep (EVAL_LOG.md Round 19), NOT
+# sklearn's 0.5 default. At 0.85: ~90% precision, ~33% recall — roughly 3.5x
+# the free heuristic's recall while losing only ~2.2% of legitimate content.
+#
+# Deliberately biased toward precision because the two error types are not
+# symmetric: garbage left in the index still gets filtered at query time by
+# the Cohere reranker + _RERANK_MIN_SCORE (Round 3), but legitimate content
+# dropped at index time is unrecoverable until the next full re-index.
+DECISION_THRESHOLD = 0.85
+
 
 def embed_texts(texts):
     """Embed with the same model/input_type the index uses for documents."""
@@ -75,8 +85,9 @@ def main():
     clf = LogisticRegression(max_iter=2000, class_weight="balanced", C=1.0)
     clf.fit(X_tr, y_tr)
 
-    pred = clf.predict(X_te)
-    print("\n=== Embedding classifier (held-out 25%) ===")
+    prob = clf.predict_proba(X_te)[:, 1]
+    pred = (prob >= DECISION_THRESHOLD).astype(int)
+    print(f"\n=== Embedding classifier @ threshold {DECISION_THRESHOLD} (held-out 25%) ===")
     print(classification_report(y_te, pred, target_names=["keep", "drop"], digits=3))
     print("Confusion matrix [rows=true keep/drop, cols=pred keep/drop]:")
     print(confusion_matrix(y_te, pred))
@@ -95,6 +106,7 @@ def main():
             {
                 "coef": clf.coef_.tolist(),
                 "intercept": clf.intercept_.tolist(),
+                "decision_threshold": DECISION_THRESHOLD,
                 "n_train": int(len(y_tr)),
                 "positive_labels": sorted(POSITIVE_LABELS),
             },

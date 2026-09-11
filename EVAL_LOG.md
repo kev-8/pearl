@@ -760,5 +760,22 @@ The classifier catches **8.6x more garbage**, but at the default threshold its 7
 
 **The errors are not symmetric.** Garbage left in the index gets a second filter at query time (Cohere rerank + `_RERANK_MIN_SCORE`, Round 3), but legitimate content dropped at index time is gone until the next full re-index. That asymmetry argues for a high-precision operating point even at the cost of recall.
 
+### Decision: threshold 0.85
+Chosen for the best ratio of garbage removed to real content sacrificed, given the error asymmetry above. Persisted as `DECISION_THRESHOLD` in `quality_distill_train.py` and written into `quality_distill_model.json`, so Phase 2 consumes the calibrated value rather than sklearn's 0.5 default.
+
+Confirmed on the held-out set at 0.85: **precision 0.903, recall 0.326** — 159 garbage chunks caught against only **17 false positives out of 763 legitimate chunks (2.2%)**. That is ~3.5x the free heuristic's recall (0.094) at only modestly lower precision (0.903 vs 0.958).
+
+Expected combined effect at Phase 2: the free heuristic (Round 18) and this classifier are complementary — the heuristic is near-perfect precision on structural garbage (repetition loops, non-Latin script, empty/short), the classifier adds semantic coverage of OCR letter-soup and contentless boilerplate that no cheap signal can reach.
+
 ### Status
-Built and measured; **threshold not yet chosen** — that's a judgment call about how much real archive material is acceptable to lose, pending user decision. Not wired into `preproc.py`, not run at corpus scale.
+Built, measured, threshold chosen. **Not yet wired into `preproc.py` and not run at corpus scale** — both are Phase 2 work, alongside the lockstep `chunk_row_indices` fix (Round 15) and Whisper watermark stripping (Round 18).
+
+### Cost summary for the whole garbage-mitigation effort
+| Item | Cost |
+|---|---|
+| Round 18 free signals (repetition, non-Latin) | $0.00 |
+| Round 19 labeling — 5,000 chunks, Haiku 4.5 via Batch API | $0.50 |
+| Round 19 embeddings for labeled sample | ~$0.10 |
+| **Total** | **~$0.60** |
+
+Against the originally-scoped ~$200-500 for a full-corpus LLM classification pass. The saving comes from labeling a small sample and distilling into a free local classifier, rather than sending all 2.5M chunks to an LLM — plus running inference on embeddings the re-index already computes.
