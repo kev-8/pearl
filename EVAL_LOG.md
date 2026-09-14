@@ -779,3 +779,33 @@ Built, measured, threshold chosen. **Not yet wired into `preproc.py` and not run
 | **Total** | **~$0.60** |
 
 Against the originally-scoped ~$200-500 for a full-corpus LLM classification pass. The saving comes from labeling a small sample and distilling into a free local classifier, rather than sending all 2.5M chunks to an LLM — plus running inference on embeddings the re-index already computes.
+
+---
+
+## Round 20 — Delete-in-Place Dry Run: Threshold Is Wrong for Deletion (2026-09-14)
+
+### Reframing: no re-index needed
+Phase 2 was scoped as re-chunk + re-embed + namespace blue-green cutover. That is more than the job requires. Both filters only *remove* chunks; they never alter the text of survivors. Chunking is deterministic (verified), so every surviving chunk is byte-identical to what is already indexed and **its existing embedding is still correct**. The operation is therefore a deletion, not a rebuild — which drops the two largest costs (re-embedding ~2.5M chunks through Cohere, and the full re-upsert against Pinecone's write-unit budget that `--max-vectors` exists to manage).
+
+Round 15's renumbering objection does **not** apply: it was about re-*upserting* filtered chunks, which shifts every sequential id. Deletion preserves ids — `chunk-7` stays `chunk-7`, nothing shifts, no tail is orphaned.
+
+### Avoiding the reconstruction risk
+Identifying bad positions by re-chunking the CSVs would require reproducing the original `--shuffle` / `--seed` / `--skip-vectors` settings exactly; getting that wrong deletes the wrong vectors. Verified a safer route: `_index.list()` paginates all ids and `_index.fetch()` returns each vector's **stored metadata text and embedding values**. So `quality_delete_dryrun.py` reads id and text from the same record and never re-chunks — removing that error class entirely. It also means the distilled classifier scores embeddings fetched from Pinecone, at no re-embedding cost.
+
+### Dry run (first 2,000 vectors, all `chunk-*`/Le Nouvelliste due to id ordering)
+- Flagged **197 / 2,000 (9.85%)** — 194 classifier-only, 2 heuristic-only, 1 both.
+- Throughput ~177 vec/s → full-index scan ≈ **4 hours**, ~4,958 fetch calls, extrapolating to ~244k deletions.
+- Deletes nothing; writes every condemned chunk's full text to `quality_delete_dryrun_report.csv`, so the action stays reversible.
+
+### Finding: 0.85 is the wrong threshold for *deletion*
+Hand-review of the borderline band found genuine archival records being flagged — not garbage, just OCR-noisy:
+- `"La Fondation Care mot la disposition dd gouvernement haitien pour diairibution gratiite ave indigenia... dive enfants nétasiiouc"` — a Care Foundation aid-distribution notice.
+- `"Potit-Goive, le 2 Nov... MATERIMOGNIAL... Mme Are bien, née Alagrace Desir"` — a matrimonial notice with place and date.
+- `"Ble porto-rieain, qui désire garder son individualité"` — plainly readable French.
+
+**50.8% of classifier-flagged chunks sit in the least-confident 0.85-0.90 band** (median prob 0.899); only 14.7% are above 0.95. The held-out 90% precision means ~10% false positives — roughly 24k real chunks across a full-index run.
+
+**The key distinction missed when 0.85 was chosen:** at *index-build* time a "drop" destroys nothing (the source CSV still holds the text, a future re-index can recover it), but *deleting* from Pinecone discards the vector. 0.85 remains defensible for filtering during a future re-index; deletion warrants a stricter bar.
+
+### Status
+Dry run built and validated on a slice. **Nothing deleted.** Deletion threshold pending decision.
