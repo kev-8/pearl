@@ -5,8 +5,8 @@ dash.register_page(__name__, path='/', title='pearl')
 
 DESCRIPTIONS = {
     'en': "Pearl was created to celebrate Haiti's rich history, vibrant culture, and resilient people. The name is a nod to Haiti's nickname, the Pearl of the Antilles.",
-    'ht': "Pearl te kreye pou selebre istwa rich Ayiti, kilti pwosede ki vibwan, ak moun ki rezistan. Non an se yon ti non ann Ayiti, Pèl Zantiy yo.",
-    'fr': "Pearl a été créée pour célébrer la riche histoire, sa culture dynamique et son peuple résilient. Le nom fait référence au surnom d'Haïti, la Perle des Antilles.",
+    'ht': "Pearl te kreye pou selebre istwa rich Ayiti, kilti vibran li, ak pèp rezilyan li. Non an fè referans ak ti non Ayiti a, Pèl Zantiy yo.",
+    'fr': "Pearl a été créée pour célébrer la riche histoire d'Haïti, sa culture dynamique et son peuple résilient. Le nom fait référence au surnom d'Haïti, la Perle des Antilles.",
 }
 
 ENTER_TEXT = {
