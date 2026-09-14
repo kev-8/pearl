@@ -31,6 +31,17 @@ FETCH_BATCH = 500          # Pinecone fetch() ids per call
 REPORT_PATH = "quality_delete_dryrun_report.csv"
 CLASSIFIER_PATH = "quality_distill_model.json"
 
+# Deliberately STRICTER than the model's own 0.85 (quality_distill_train.py).
+# Those two numbers answer different questions:
+#   - 0.85 governs filtering during a future re-index, where a "drop" destroys
+#     nothing — the source CSV still holds the text and a re-index recovers it.
+#   - 0.95 governs DELETION from Pinecone, which discards the vector.
+# Round 20 hand-review found genuine archival records (a Care Foundation aid
+# notice, a matrimonial notice, readable French) inside the 0.85-0.90 band,
+# which holds ~51% of all classifier flags. Only ~15% of flags exceed 0.95,
+# and those were unambiguous OCR garbage on inspection.
+DELETE_THRESHOLD = 0.95
+
 
 def load_classifier():
     """Load the distilled classifier, if it has been trained."""
@@ -42,7 +53,9 @@ def load_classifier():
     return {
         "coef": np.array(m["coef"][0], dtype=np.float32),
         "intercept": float(m["intercept"][0]),
-        "threshold": float(m.get("decision_threshold", 0.85)),
+        # Note: intentionally ignores the model file's own decision_threshold —
+        # see DELETE_THRESHOLD above for why deletion uses a stricter bar.
+        "threshold": DELETE_THRESHOLD,
     }
 
 

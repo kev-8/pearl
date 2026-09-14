@@ -809,3 +809,12 @@ Hand-review of the borderline band found genuine archival records being flagged 
 
 ### Status
 Dry run built and validated on a slice. **Nothing deleted.** Deletion threshold pending decision.
+
+### Decision: deletion threshold 0.95 (distinct from the 0.85 index-build threshold)
+Set as `DELETE_THRESHOLD` in `quality_delete_dryrun.py`, deliberately ignoring the model file's own 0.85 — the two numbers answer different questions (index-build drops are recoverable from the source CSV; Pinecone deletions are not).
+
+Re-ran the slice at 0.95: flagged **32 / 2,000 (1.60%)**, down from 197 (9.85%). Extrapolates to ~39,664 deletions instead of ~244k.
+
+**Residual false positives remain, and are inherent.** Hand-review at 0.95 still found real OCR-degraded content near the cutoff — most clearly `"LE RAPPORT D'EISENHOWER SUR L'AMERIQUE LATINE / Por Teletype AP..."` (p=0.953), a genuine AP wire story with byline and dates. The classifier cannot cleanly separate "heavily degraded but meaningful" from "meaningless" because the two are close in embedding space; stricter thresholds make this rarer, not absent. Roughly 1-2 of the 10 least-confident flags looked like real content, versus none among the high-confidence ones.
+
+Net: ~5% false-positive rate on ~39.7k deletions (~2k real chunks) against ~10% on ~244k (~24k) at 0.85 — about a 12x reduction in real content lost, and the report's full-text export keeps any of it recoverable.
