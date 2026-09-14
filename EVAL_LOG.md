@@ -818,3 +818,27 @@ Re-ran the slice at 0.95: flagged **32 / 2,000 (1.60%)**, down from 197 (9.85%).
 **Residual false positives remain, and are inherent.** Hand-review at 0.95 still found real OCR-degraded content near the cutoff — most clearly `"LE RAPPORT D'EISENHOWER SUR L'AMERIQUE LATINE / Por Teletype AP..."` (p=0.953), a genuine AP wire story with byline and dates. The classifier cannot cleanly separate "heavily degraded but meaningful" from "meaningless" because the two are close in embedding space; stricter thresholds make this rarer, not absent. Roughly 1-2 of the 10 least-confident flags looked like real content, versus none among the high-confidence ones.
 
 Net: ~5% false-positive rate on ~39.7k deletions (~2k real chunks) against ~10% on ~244k (~24k) at 0.85 — about a 12x reduction in real content lost, and the report's full-text export keeps any of it recoverable.
+
+### Salvage guard: loops with real content ahead of them
+Reviewing Radio Haïti catches found mixed chunks — e.g. `rh-100634` carries ~25 words of genuine French (`"...c'est moi qui inaugurerai le pouvoir..."`) before `"gl"` repeats ~110 times. **~28% of repetition-loop catches have >10 distinct non-loop tokens.** Deleting those destroys recoverable content; the right fix is truncation (strip the loop, keep the text), but truncation changes the text and therefore needs re-embedding — a re-index task, not delete-in-place.
+
+Added `MAX_SALVAGEABLE_TOKENS = 10` so this pass deletes only near-pure loops and leaves salvageable ones for the Phase 2 cleaning pass.
+
+### Unbiased per-corpus rates (prefix-scoped slices, 3,000 each)
+Pinecone returns ids lexically, so unrestricted slices were 100% Le Nouvelliste. Added `--prefix` to sample each corpus properly.
+
+| Corpus | Vectors | Delete rate | Driven by |
+|---|---|---|---|
+| Le Nouvelliste (`chunk-*`) | ~2.30M | 1.37% | classifier (OCR garble) |
+| Radio Haïti (`rh-*`) | ~181k | 4.53% | heuristic (Whisper loops) |
+
+Weighted corpus-wide: **~39,700 deletions (~1.6%)**.
+
+Two corrections to earlier assumptions worth recording:
+- I predicted Radio Haïti would be *cleaner* and pull the rate below Le Nouvelliste's. It is ~3x higher — the Round 19 label rates (47% vs 15% "bad") measured what an LLM flags overall, not what survives a strict 0.95 deletion bar plus the loop detector.
+- The script's single-slice extrapolation was misleading for the same lexical-ordering reason (it projected an rh-only rate across the whole index, implying ~145k). The weighted per-corpus figure above supersedes it.
+
+**The two filters are complementary, not redundant:** the classifier accounts for essentially all Le Nouvelliste catches, the heuristic for essentially all Radio Haïti ones. Building both was justified.
+
+### Status
+Dry-run tooling complete and validated per-corpus. **Nothing deleted.** Full scan (~4h, ~5k fetch calls) not yet run — pending a check on Pinecone read-unit headroom.

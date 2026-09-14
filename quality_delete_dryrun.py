@@ -18,7 +18,9 @@ Usage:
 
 import argparse
 import json
+import re
 import time
+from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -42,6 +44,17 @@ CLASSIFIER_PATH = "quality_distill_model.json"
 # and those were unambiguous OCR garbage on inspection.
 DELETE_THRESHOLD = 0.95
 
+# Salvage guard for repetition-loop chunks. Round 20 review found that some
+# Whisper loops are preceded by genuine content — e.g. rh-100634 carries ~25
+# words of real French ("...c'est moi qui inaugurerai le pouvoir...") before
+# "gl" repeats ~110 times. ~28% of loop catches have >10 distinct non-loop
+# tokens. Those are a *truncation* problem (strip the loop, keep the text),
+# not a deletion problem — but truncation changes the text and so requires
+# re-embedding, i.e. a re-index, not this delete-in-place pass.
+# So: delete only near-pure loops here, and leave salvageable ones for the
+# Phase 2 cleaning pass rather than destroying their real content now.
+MAX_SALVAGEABLE_TOKENS = 10
+
 
 def load_classifier():
     """Load the distilled classifier, if it has been trained."""
@@ -59,15 +72,37 @@ def load_classifier():
     }
 
 
+def distinct_non_loop_tokens(text):
+    """Count distinct tokens excluding the single most-repeated one.
+
+    A near-pure Whisper loop scores ~0; a chunk with real content ahead of
+    the loop scores high. Used to decide whether a loop chunk is salvageable.
+    """
+    words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ']+", text.lower())
+    if not words:
+        return 0
+    top = Counter(words).most_common(1)[0][0]
+    return len({w for w in words if w != top})
+
+
 def classifier_prob(clf, vector):
     z = float(np.dot(clf["coef"], np.asarray(vector, dtype=np.float32)) + clf["intercept"])
     return 1.0 / (1.0 + np.exp(-z))
 
 
-def iter_ids(limit=None):
-    """Stream vector ids from Pinecone."""
+def iter_ids(limit=None, prefix=None):
+    """Stream vector ids from Pinecone, optionally restricted to an id prefix.
+
+    Pinecone returns ids in lexical order, so an unrestricted scan yields all
+    `chunk-*` (Le Nouvelliste) vectors before any `rh-*` (Radio Haiti) ones —
+    a small unrestricted sample is therefore single-corpus, not representative.
+    Use prefix to get an unbiased per-corpus rate.
+    """
+    kwargs = {"namespace": NAMESPACE}
+    if prefix:
+        kwargs["prefix"] = prefix
     seen = 0
-    for page in _index.list(namespace=NAMESPACE):
+    for page in _index.list(**kwargs):
         for vid in page:
             yield vid
             seen += 1
@@ -80,6 +115,7 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--limit", type=int, help="scan only the first N vectors")
     g.add_argument("--all", action="store_true", help="scan the entire index")
+    ap.add_argument("--prefix", help="restrict to an id prefix, e.g. 'rh-' or 'chunk-'")
     args = ap.parse_args()
     limit = None if args.all else args.limit
 
@@ -88,7 +124,10 @@ def main():
 
     stats = _index.describe_index_stats()
     print(f"Index holds {stats.get('total_vector_count'):,} vectors")
-    print(f"Scanning {'ALL' if limit is None else f'first {limit:,}'}...\n")
+    scope = "ALL" if limit is None else f"first {limit:,}"
+    if args.prefix:
+        scope += f" with prefix {args.prefix!r}"
+    print(f"Scanning {scope}...\n")
 
     rows = []
     batch_ids = []
@@ -115,6 +154,14 @@ def main():
 
             heur_drop = h["verdict"] == "drop"
             clf_drop = prob is not None and prob >= clf["threshold"]
+
+            # Spare loop chunks that still carry salvageable real content.
+            salvageable = 0
+            if h.get("hard_trigger") == "repetition_loop":
+                salvageable = distinct_non_loop_tokens(text)
+                if salvageable > MAX_SALVAGEABLE_TOKENS:
+                    heur_drop = False
+
             if not (heur_drop or clf_drop):
                 continue
 
@@ -126,13 +173,14 @@ def main():
                           else "both",
                 "hard_trigger": h.get("hard_trigger"),
                 "garble_score": h["score"],
+                "salvageable_tokens": salvageable,
                 "classifier_prob": round(prob, 4) if prob is not None else None,
                 "sqldate": meta.get("sqldate", ""),
                 "source_url": meta.get("source_url", ""),
                 "text": text,
             })
 
-    for vid in iter_ids(limit):
+    for vid in iter_ids(limit, prefix=args.prefix):
         batch_ids.append(vid)
         scanned += 1
         if len(batch_ids) >= FETCH_BATCH:
