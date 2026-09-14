@@ -842,3 +842,47 @@ Two corrections to earlier assumptions worth recording:
 
 ### Status
 Dry-run tooling complete and validated per-corpus. **Nothing deleted.** Full scan (~4h, ~5k fetch calls) not yet run — pending a check on Pinecone read-unit headroom.
+
+### Full-index scan results (2,479,001 vectors, 3.7h, 4,959 fetch calls, ~248k RU)
+
+**Flagged: 505,554 (20.39%)** — an order of magnitude above the ~1.6% the prefix slices predicted. The slices were unrepresentative: Pinecone returns ids *lexically* (`chunk-0, chunk-1, chunk-10, chunk-100, chunk-1000...`), so a 3,000-id slice samples a strange, clustered subset rather than a random one. Prefix scoping fixed the corpus-mix bias but not this one. **Lesson: for rate estimates, sample random ids, not a `list()` prefix.**
+
+The gap decomposes cleanly:
+
+| Category | Count | % of index |
+|---|---|---|
+| Empty-text vectors (ingest bug, below) | 400,000 | 16.1% |
+| Non-empty, genuinely flagged | 105,554 | 4.3% |
+| **Total** | **505,554** | **20.4%** |
+
+The 4.3% non-empty rate is the real quality figure, and is in the neighbourhood the slices suggested.
+
+### Root cause: 400k orphaned vectors from a broken upsert
+The empty vectors are **exactly 400,000, perfectly contiguous** (`chunk-1897576` → `chunk-2297575`), all Le Nouvelliste, and carry **only an empty `text` key** — no `sqldate`, `source_url`, `issue_id`, or entity fields that every healthy vector has. Verified directly against Pinecone, not just via the report.
+
+That range terminates at 2,297,576 — the recorded post-upsert Le Nouvelliste count — so it is the tail of the original ingest. The mechanism is in `preproc.py::upsert_from_checkpoint`:
+
+```python
+chunk_text = chunks_text[vector_idx] if vector_idx < len(chunks_text) else ""
+row_idx = chunk_row_indices[vector_idx] if vector_idx < len(chunk_row_indices) else None
+```
+
+The embeddings checkpoint held more vectors than `chunks_text` had entries, so the last 400k fell through to `""`/`None` and were upserted as embeddings with no text and no metadata. They are not merely empty but **unattributable** — nothing records what text they encode. (Plausibly the embed and upsert runs saw different `chunk_dataframe` output, e.g. differing `--shuffle`/`--seed` or CSV state.)
+
+These are the same phantom vectors Round 12 worked around with the query-time filter `{"text": {"$ne": ""}}`. That filter hid the symptom; the vectors were never removed.
+
+**Deleting them is zero-risk:** they carry no recoverable information, and retrieval already excludes them. Removing them reclaims ~16% of index storage with no effect on eval results.
+
+### Corrected deletion picture
+| Group | Count | Risk |
+|---|---|---|
+| Empty/orphaned vectors | 400,000 | None — unattributable, already filtered at query time |
+| Repetition loops / non-Latin (heuristic) | ~5,459 | Low — hand-verified garbage, salvage guard applied |
+| OCR garble (classifier ≥0.95) | ~77,394 | Moderate — ~5% false-positive rate, text exported for recovery |
+| Both filters agree | ~2,598 | Low |
+
+### Status
+Full dry run complete. **Nothing deleted.** Report at `quality_delete_dryrun_report.csv` with full text for reversibility.
+
+### New follow-up: fix the silent-fallthrough bug
+`preproc.py::upsert_from_checkpoint` should fail loudly on a checkpoint/chunk-count mismatch instead of silently upserting empty metadata. As written it can quietly poison an index with unattributable vectors — this one went unnoticed through Rounds 1-19 and was only caught by a full-index scan. Related to, but distinct from, the `chunk_row_indices` lockstep issue from Round 15.
