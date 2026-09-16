@@ -925,3 +925,35 @@ Orphan cleanup complete. The 105,554 quality-flagged (non-empty) vectors are a *
 2. **105,554 quality-flagged vectors** — pending review.
 3. **Filters not wired into `preproc.py`** — Round 17's ~27% corruption-driven failure rate is still live production behaviour.
 4. Whisper watermark stripping; `chunk_row_indices` lockstep fix (Round 15).
+
+---
+
+## Round 22 — Fix the Silent Fallthrough That Created the Orphans (2026-09-16)
+
+### The bug
+`preproc.py::upsert_from_checkpoint` read chunk text and row metadata defensively:
+
+```python
+chunk_text = chunks_text[vector_idx] if vector_idx < len(chunks_text) else ""
+row_idx = chunk_row_indices[vector_idx] if vector_idx < len(chunk_row_indices) else None
+```
+
+When the embeddings checkpoint held more vectors than the chunk list, those guards silently produced empty text and no metadata — and the upsert wrote them anyway. That is how 400,000 unattributable vectors entered the index (Round 20/21). The failure was invisible: no error, no warning, and the resulting vectors only surfaced 19 eval rounds later during a full-index scan.
+
+### Fix
+Three guards, all raising `ValueError` **before** any Pinecone connection is opened, so a mismatch cannot write even one bad vector:
+1. **Pre-flight length check** — counts embeddings in the checkpoint up front and refuses to start if it exceeds the chunk count, reporting exactly how many vectors would have been written empty.
+2. **`chunks_text` / `chunk_row_indices` parity check** — these must be equal length; a mismatch means they were built from different data, or a chunk-level filter dropped from one but not the other (precisely the hazard the Round 15 lockstep note flagged for the upcoming quality filter).
+3. **Per-vector assertions in the loop** — retained as a backstop, now raising instead of substituting empty values.
+
+A shorter-than-expected checkpoint is a warning, not an error: it means the tail simply is not upserted, which loses nothing and is recoverable by resuming.
+
+### Verification
+- Checkpoint longer than chunks (the original bug): raises, naming the file and the 5-vs-3 mismatch.
+- `chunks_text`/`chunk_row_indices` mismatch: raises.
+- Matched lengths: upserts all 3 vectors normally — healthy path unaffected.
+
+Both failure cases abort before constructing the Pinecone client, confirmed by the fact that the tests raise without credentials being exercised.
+
+### Why this matters beyond the cleanup
+The 400k orphans were recoverable only because they were contiguous and structurally distinctive. A partial mismatch scattered through an index would be far harder to identify, and impossible to attribute after the fact. This class of bug should fail the run, not degrade the index.

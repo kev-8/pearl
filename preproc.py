@@ -245,6 +245,37 @@ def upsert_from_checkpoint(checkpoint_path, chunks_text, chunk_row_indices, df,
 
     Reads one JSONL line at a time to avoid loading the full file into memory.
     """
+    if len(chunks_text) != len(chunk_row_indices):
+        raise ValueError(
+            f"chunks_text ({len(chunks_text)}) and chunk_row_indices "
+            f"({len(chunk_row_indices)}) must be the same length — each chunk "
+            f"needs its source row for metadata. A mismatch means the two were "
+            f"built from different data, or a chunk-level filter dropped "
+            f"entries from one but not the other."
+        )
+
+    # Pre-flight: count embeddings in the checkpoint before writing anything,
+    # so a mismatch aborts up front rather than part-way through an upsert
+    # that has already written vectors (see Round 21).
+    checkpoint_total = 0
+    with open(checkpoint_path, 'r') as f:
+        for line in f:
+            checkpoint_total += len(json.loads(line))
+    if checkpoint_total > len(chunks_text):
+        raise ValueError(
+            f"Checkpoint {checkpoint_path} holds {checkpoint_total} embeddings "
+            f"but only {len(chunks_text)} chunks were produced. Upserting would "
+            f"write {checkpoint_total - len(chunks_text)} vectors with empty "
+            f"text and no metadata. Re-chunk with the same settings used to "
+            f"build the checkpoint, or rebuild the checkpoint."
+        )
+    if checkpoint_total < len(chunks_text):
+        logger.warning(
+            "Checkpoint holds %d embeddings for %d chunks — the tail %d chunks "
+            "will not be upserted.",
+            checkpoint_total, len(chunks_text), len(chunks_text) - checkpoint_total,
+        )
+
     pinecone_api_key = os.getenv('PINECONE_API_KEY')
     pc = Pinecone(api_key=pinecone_api_key)
     index = pc.Index('index-1')
@@ -277,9 +308,34 @@ def upsert_from_checkpoint(checkpoint_path, chunks_text, chunk_row_indices, df,
                 if max_vectors and upserted_count >= max_vectors:
                     break
 
+                # Fail loudly on a checkpoint/chunk-count mismatch. This used
+                # to fall through to "" / None, which silently upserted real
+                # embeddings carrying no text and no metadata — 400,000 such
+                # orphaned vectors were found in the index and deleted in
+                # EVAL_LOG.md Round 21. They are unattributable after the fact
+                # (nothing records what text they encode), so the only safe
+                # behaviour is to stop before writing them.
+                if vector_idx >= len(chunks_text):
+                    raise ValueError(
+                        f"Checkpoint has more embeddings than chunks: reached "
+                        f"vector_idx={vector_idx} but chunks_text has only "
+                        f"{len(chunks_text)} entries. The checkpoint was almost "
+                        f"certainly produced from a different chunking run "
+                        f"(check --shuffle/--seed/--skip-vectors and the CSV). "
+                        f"Refusing to upsert vectors with empty metadata."
+                    )
+                if vector_idx >= len(chunk_row_indices):
+                    raise ValueError(
+                        f"chunk_row_indices is shorter than chunks_text at "
+                        f"vector_idx={vector_idx} "
+                        f"({len(chunk_row_indices)} vs {len(chunks_text)}). "
+                        f"Chunk-to-row metadata mapping is corrupt; refusing to "
+                        f"upsert vectors with missing source metadata."
+                    )
+
                 global_id = id_offset + vector_idx
-                chunk_text = chunks_text[vector_idx] if vector_idx < len(chunks_text) else ""
-                row_idx = chunk_row_indices[vector_idx] if vector_idx < len(chunk_row_indices) else None
+                chunk_text = chunks_text[vector_idx]
+                row_idx = chunk_row_indices[vector_idx]
 
                 batch.append(_build_record(emb, chunk_text, row_idx, df, global_id, id_prefix))
                 vector_idx += 1
