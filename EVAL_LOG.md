@@ -886,3 +886,42 @@ Full dry run complete. **Nothing deleted.** Report at `quality_delete_dryrun_rep
 
 ### New follow-up: fix the silent-fallthrough bug
 `preproc.py::upsert_from_checkpoint` should fail loudly on a checkpoint/chunk-count mismatch instead of silently upserting empty metadata. As written it can quietly poison an index with unattributable vectors — this one went unnoticed through Rounds 1-19 and was only caught by a full-index scan. Related to, but distinct from, the `chunk_row_indices` lockstep issue from Round 15.
+
+---
+
+## Round 21 — 400k Orphaned Vectors Deleted (2026-09-16)
+
+### Action
+Deleted the contiguous orphan block `chunk-1897576` .. `chunk-2297575` — 400,000 vectors upserted with real embeddings but no text and no metadata, caused by the silent fallthrough in `preproc.py::upsert_from_checkpoint` (see Round 20).
+
+`quality_delete_orphans.py` re-fetches and re-verifies every id against Pinecone immediately before deleting rather than trusting the dry-run report, and deletes only vectors matching the exact orphan shape (empty/absent `text` AND none of `sqldate`/`source_url`/`issue_id`/`top_entity_names`/`top_entity_labels`). Any deviation aborts the run. Progress is checkpointed for resume.
+
+### Results
+| | |
+|---|---|
+| Verified as orphans | 400,000 |
+| Deleted | 400,000 |
+| Anomalies | **0** |
+| Already absent | 0 |
+| Runtime | 2,174s (~36 min) |
+| Index count | 2,479,001 → **2,079,001** |
+
+Pre-flight verification pass over the first 20,000 ids also returned 20,000/20,000 orphans, 0 anomalies, before any deletion was authorized.
+
+### Post-deletion validation
+- Index count fell by exactly 400,000 — no over- or under-deletion.
+- Sampled orphan ids (`chunk-1897576`, `chunk-2100000`, `chunk-2297575`): all absent.
+- Healthy ids (`chunk-7`, `chunk-100`, `rh-50`) intact with full metadata.
+- **Boundary check:** `chunk-1897575`, the vector immediately preceding the orphan range, survives with its text intact — confirms no off-by-one into real data.
+- Live `search_pinecone` returns a full 10 blocks with correct archive/date/entity headers.
+
+Retrieval behaviour is unchanged by design: these vectors were already excluded at query time by the Round 12 filter `{"text": {"$ne": ""}}`. The win is structural — ~16% of the index reclaimed, and the index no longer contains unattributable vectors.
+
+### Status
+Orphan cleanup complete. The 105,554 quality-flagged (non-empty) vectors are a **separate, riskier decision** — the classifier portion carries ~5% false positives on real archival content — and have not been touched.
+
+### Still open
+1. **`preproc.py` silent fallthrough** — must raise on a checkpoint/chunks_text length mismatch instead of writing empty metadata. Unfixed; a future ingest can still poison the index the same way.
+2. **105,554 quality-flagged vectors** — pending review.
+3. **Filters not wired into `preproc.py`** — Round 17's ~27% corruption-driven failure rate is still live production behaviour.
+4. Whisper watermark stripping; `chunk_row_indices` lockstep fix (Round 15).
