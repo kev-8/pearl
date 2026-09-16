@@ -957,3 +957,51 @@ Both failure cases abort before constructing the Pinecone client, confirmed by t
 
 ### Why this matters beyond the cleanup
 The 400k orphans were recoverable only because they were contiguous and structurally distinctive. A partial mismatch scattered through an index would be far harder to identify, and impossible to attribute after the fact. This class of bug should fail the run, not degrade the index.
+
+---
+
+## Round 23 — Filters Wired Into Production (2026-09-16)
+
+### Changes
+**`modeling.py` (query time — immediate effect).** `filter_low_quality()` scores every retrieved candidate with the heuristic plus the distilled classifier and drops garbled ones *before* reranking, so the reranker spends its 6 slots on real documents. `_RERANK_FETCH_K` raised 10→14 to offset dropped candidates. `include_values=True` added so candidates can be classifier-scored. Fails safe throughout: missing model → heuristic only; scoring exception → keep the chunk; everything filtered → return the unfiltered set rather than nothing.
+
+**`preproc.py` (index build — future ingests).** Same filter applied in `chunk_dataframe`, filtering `chunks_text` and `chunk_row_indices` **in lockstep** via a zipped comprehension, with a pre-check that they match. This closes the Round 15 misalignment hazard instead of repeating it — the old code filtered only `chunks_text`, which was latent solely because `"URL not found"` never matched this corpus.
+
+**Threshold correction.** Query-time filtering initially used 0.95 by analogy with deletion. That was wrong: the error asymmetry is **reversed**. A query-time false positive hides one chunk from one query and the vector stays indexed and reusable; a deletion false positive is permanent. Query time therefore uses the 0.85 training threshold, deletion keeps 0.95.
+
+`quality_distill_model.json` was force-added to git — `.gitignore`'s `*.json` rule would otherwise have excluded it from deploys, silently degrading production to heuristic-only filtering.
+
+### Results (vs Round 17)
+
+| Metric | Round 17 | Round 23 |
+|---|---|---|
+| Answer Relevancy | 93.3% | **100%** |
+| Faithfulness | 86.7% | **100%** |
+| Contextual Relevancy | 40.0% | **46.7%** |
+| Tool Correctness | 100% | 100% |
+| Source Attribution | 93.3% | 93.3% |
+| Language Consistency | 100% | 100% |
+| Knowledge Retention | 28.6% | 28.6% |
+| Conversation Completeness | 100% | 100% |
+| Referential Coherence | 100% | 100% |
+
+All four Round 17 corruption-driven failures improved:
+
+| Query | Round 17 | Round 23 |
+|---|---|---|
+| `eval-ht-definitional` (restavek) | 0.59 ❌ | **0.81 ✅** |
+| `eval-fr-mixed` (PaP economy) | 0.15 ❌ | 0.47 ❌ |
+| `eval-ht-slang-compare` (earthquake) | 0.00 ❌ | 0.21 ❌ |
+| `eval-ht-yesno-founding` (Dessalines) | 0.62 ❌ | 0.59 ❌ |
+
+These are attributable, not variance: the router runs at `temperature=0` (Round 7), so retrieval is deterministic and identical candidates are produced run-to-run. The filter fired on 12 of 17 queries, dropping 1-3 of 14 candidates each.
+
+### Honest assessment
+A modest win. One query flipped to passing; Contextual Relevancy remains 46.7%. The ceiling is the classifier's ~33% recall at 0.85 — most garbage still passes. Observed directly during implementation: the known-garbage chunk `"Ihewefc TANWS QUE IES STATIST3QUES"` scores 0.666, below threshold, and still ranks first for the agriculture query. The remaining CR failures are also not all quality-related — topical drift (Round 1 onward) and archive coverage gaps (2010 earthquake, archive ends ~2002) are unaffected by any chunk filter.
+
+**This is the first round in which production retrieval behaviour actually changed.** Rounds 15-22 were diagnosis, tooling, and index hygiene.
+
+### Still open
+1. **105,554 quality-flagged vectors** — not deleted; query-time filtering now suppresses a subset of them per query instead.
+2. **Classifier recall** — 33% at 0.85. More labelled data (cost scales at ~$0.10/1k chunks) would be the direct lever.
+3. Whisper watermark stripping; topical drift; archive coverage gaps.

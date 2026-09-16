@@ -18,6 +18,7 @@ from langgraph.types import Send
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
 from preproc import generate_text_embeddings, normalize_embeddings
+from quality_filter_candidate import score_chunk_quality
 
 
 logger = logging.getLogger(__name__)
@@ -28,9 +29,79 @@ _pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
 _index = _pc.Index('index-1')
 _co = cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
 
-_RERANK_FETCH_K = 10   # candidates fetched from Pinecone before reranking
+# Raised from 10 to 14 because the quality filter below now drops candidates
+# before reranking; fetching more keeps roughly the original number of real
+# documents reaching the reranker.
+_RERANK_FETCH_K = 14   # candidates fetched from Pinecone before filtering/reranking
 _RERANK_TOP_N = 6      # kept after reranking
 _RERANK_MIN_SCORE = 0.1  # chunks scoring below this are dropped regardless of rank
+
+# ── Chunk quality filtering at query time ────────────────────────────────────
+# The index still contains OCR garble and transcription loops (EVAL_LOG.md
+# Rounds 17-20). Filtering here rather than deleting keeps the action fully
+# reversible and avoids destroying the ~5% of flagged chunks that are real but
+# OCR-degraded. Costs one dot product per candidate — negligible next to the
+# embedding and rerank calls already in this path.
+_QUALITY_MODEL_PATH = os.path.join(os.path.dirname(__file__), 'quality_distill_model.json')
+# The training threshold (0.85), not the stricter 0.95 used for deletion. The
+# error asymmetry is reversed at query time: a false positive here only hides
+# one chunk from one query — the vector stays indexed and can serve any other
+# query — whereas a deletion false positive is permanent. So query-time
+# filtering can afford the more sensitive operating point.
+_QUALITY_MIN_PROB = 0.85
+
+
+def _load_quality_model():
+    """Load the distilled quality classifier; None if unavailable.
+
+    Never raises — a missing or malformed model must degrade to heuristic-only
+    filtering rather than take down retrieval.
+    """
+    try:
+        with open(_QUALITY_MODEL_PATH) as f:
+            m = json.load(f)
+        return (
+            np.asarray(m['coef'][0], dtype=np.float32),
+            float(m['intercept'][0]),
+        )
+    except Exception as err:
+        logger.warning("Quality classifier unavailable (%s); using heuristic only", err)
+        return None
+
+
+_quality_model = _load_quality_model()
+
+
+def _is_low_quality(text: str, values) -> bool:
+    """True if a retrieved chunk looks like OCR garble or a transcription loop."""
+    try:
+        if score_chunk_quality(text, use_french_rescue=True)['verdict'] == 'drop':
+            return True
+        if _quality_model is not None and values:
+            coef, intercept = _quality_model
+            z = float(np.dot(coef, np.asarray(values, dtype=np.float32)) + intercept)
+            return 1.0 / (1.0 + np.exp(-z)) >= _QUALITY_MIN_PROB
+    except Exception as err:
+        # Scoring must never break retrieval — keep the chunk on error.
+        logger.warning("Quality scoring failed, keeping chunk: %s", err)
+    return False
+
+
+def filter_low_quality(matches: list[dict]) -> list[dict]:
+    """Drop garbled/looping chunks, but never return an empty candidate set."""
+    kept = [
+        m for m in matches
+        if not _is_low_quality(
+            (m.get('metadata') or {}).get('text', '') or '',
+            m.get('values'),
+        )
+    ]
+    dropped = len(matches) - len(kept)
+    if dropped:
+        logger.info("Quality filter dropped %d/%d candidates", dropped, len(matches))
+    # If everything was filtered, fall back to the unfiltered set — a degraded
+    # answer beats "No results found" for a query the archive can partly serve.
+    return kept or matches
 
 
 def rerank_matches(query: str, matches: list[dict]) -> list[dict]:
@@ -112,11 +183,16 @@ def search_pinecone(query: str) -> str:
         vector=embeddings[0],
         top_k=_RERANK_FETCH_K,
         include_metadata=True,
+        # Needed to score candidates with the quality classifier below.
+        include_values=True,
         # Exclude OCR-empty phantom vectors so they don't consume top_k slots/
         filter={'text': {'$ne': ''}},
     )
 
-    matches = rerank_matches(query, results.get('matches', []))
+    # Drop garbled/looping chunks before reranking, so the reranker spends its
+    # top_n slots on real documents (EVAL_LOG.md Round 23).
+    matches = filter_low_quality(results.get('matches', []))
+    matches = rerank_matches(query, matches)
 
     lines = []
     for i, match in enumerate(matches, start=1):

@@ -10,6 +10,8 @@ import pandas as pd
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
 
+from quality_filter_candidate import score_chunk_quality
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -116,9 +118,34 @@ def chunk_dataframe(df, shuffle=False, seed=42):
         chunk_row_indices.extend([row_idx] * len(row_chunks))
 
     chunks_text = doc_to_text_list(chunks)
-    chunks_text = [t for t in chunks_text if "URL not found" not in t]
 
-    logger.info("Chunking complete: %d chunks from %d articles", len(chunks_text), len(df))
+    # Chunk-level filters. CRITICAL: chunks_text and chunk_row_indices must be
+    # filtered in lockstep — chunk_row_indices maps each chunk back to its
+    # source row for date/source_url metadata, so dropping from one list and
+    # not the other silently misattributes every chunk after the first drop.
+    # The previous code filtered only chunks_text; that was latent because
+    # "URL not found" never actually matched this corpus (EVAL_LOG.md Round 15).
+    if len(chunks_text) != len(chunk_row_indices):
+        raise ValueError(
+            f"chunks_text ({len(chunks_text)}) and chunk_row_indices "
+            f"({len(chunk_row_indices)}) diverged before filtering — the two "
+            f"splitter passes disagree."
+        )
+
+    kept = [
+        (t, r)
+        for t, r in zip(chunks_text, chunk_row_indices)
+        if "URL not found" not in t
+        and score_chunk_quality(t, use_french_rescue=True)["verdict"] != "drop"
+    ]
+    dropped = len(chunks_text) - len(kept)
+    chunks_text = [t for t, _ in kept]
+    chunk_row_indices = [r for _, r in kept]
+
+    logger.info(
+        "Chunking complete: %d chunks from %d articles (%d dropped by quality filter)",
+        len(chunks_text), len(df), dropped,
+    )
     return chunks_text, chunk_row_indices
 
 
