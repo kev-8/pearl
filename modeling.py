@@ -9,6 +9,7 @@ from pinecone import Pinecone
 from ddgs import DDGS
 import cohere
 import operator
+import re
 from typing import Annotated, Literal, TypedDict
 from langchain.agents import create_agent
 from langchain.tools import tool
@@ -316,6 +317,68 @@ _SYNTHESIS_PROMPT = (
 )
 
 
+# Newest material in either archive: Le Nouvelliste ends 1979, Radio Haïti
+# ends 2002 (verified against both source CSVs, not assumed).
+_ARCHIVE_LAST_YEAR = 2002
+_YEAR_RE = re.compile(r'\b(1[89]\d{2}|20\d{2})\b')
+
+# Before/after and historical-context markers across the three supported
+# languages. Their presence means the archive may still be useful even when
+# the only year named post-dates its coverage.
+_COMPARISON_RE = re.compile(
+    r'\b('
+    r'anvan|konpare|toujou|'                      # Haitian Creole
+    r'avant|compar\w*|autrefois|jadis|'           # French
+    r'before|compared?|versus|vs|used to|'        # English
+    r'history|histoire|istwa|historical'
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _drop_archive_for_post_archive_years(query: str, classifications: list) -> list:
+    """Remove `pinecone_search` when a query is explicitly about post-2002 years only.
+
+    The archive cannot answer such questions, and searching it anyway returns
+    unrelated earlier-decade material that measurably degrades the answer —
+    e.g. a 2010-earthquake question retrieving 1960s Italian earthquake reports
+    and scoring 0.00 on contextual relevancy (EVAL_LOG.md Round 17).
+
+    Done in code rather than in `_CLASSIFY_PROMPT` deliberately. Three attempts
+    to express this as a prompt rule (Round 26) each degraded instruction-
+    following on rules already in that prompt — the Creole->French rule from
+    Round 14 and the same-language rule both stopped being applied, hurting
+    queries whose routing never changed. A deterministic post-step cannot
+    interfere with the prompt at all.
+
+    Deliberately narrow: it fires only when the query names explicit years and
+    ALL of them are after the archive's coverage. Vague present-tense queries
+    ("kounye a", "today") name no year, so they are untouched and may still
+    legitimately draw historical context.
+    """
+    years = [int(y) for y in _YEAR_RE.findall(query)]
+    if not years or any(y <= _ARCHIVE_LAST_YEAR for y in years):
+        return classifications
+
+    # A before/after question about a post-2002 event still wants the archive
+    # for the "before" half — "life now vs before the 2010 earthquake" is
+    # partly answerable from pre-2002 material even though 2010 is the only
+    # year named. Keep the archive whenever such a marker is present.
+    if _COMPARISON_RE.search(query):
+        return classifications
+
+    filtered = [c for c in classifications if c["source"] != "pinecone_search"]
+    if not filtered:
+        # Never strip the only source — a degraded archive answer beats none.
+        return classifications
+    if len(filtered) != len(classifications):
+        logger.info(
+            "Query cites only post-%d years %s; skipping archive search",
+            _ARCHIVE_LAST_YEAR, sorted(set(years)),
+        )
+    return filtered
+
+
 def classify_query(state: RouterState, history_str: str = "") -> dict:
     """Classify query and determine which agents to invoke."""
     structured_llm = router_model.with_structured_output(ClassificationResult)
@@ -329,7 +392,10 @@ def classify_query(state: RouterState, history_str: str = "") -> dict:
         {"role": "user", "content": state["query"]}
     ])
 
-    return {"classifications": result.classifications}
+    classifications = _drop_archive_for_post_archive_years(
+        state["query"], list(result.classifications)
+    )
+    return {"classifications": classifications}
 
 
 def route_to_agents(state: RouterState) -> list[Send]:

@@ -1097,3 +1097,52 @@ The chunks the classifier misses are disproportionately **degraded-but-meaningfu
 
 ### Cost of this round
 $0 — all experiments reused existing labels and embeddings; the LLM test was a single Haiku call.
+
+---
+
+## Round 26 — Coverage-Gap Routing: Three Failed Prompt Attempts (2026-09-17)
+
+### The bug
+`_CLASSIFY_PROMPT` described `pinecone_search` as covering "~1900 to present" and never mentioned Radio Haïti at all. Verified true coverage from the source CSVs: **Le Nouvelliste 1899-1979, Radio Haïti 1930-2002** (the project memory note saying Radio Haïti starts 1957 is also wrong). The archives end in 2002.
+
+Consequence, confirmed live: every 2010-earthquake query routed to `pinecone_search`, which returned 1960s and Italian-earthquake material and scored **0.00** contextual relevancy — a failure it was structurally guaranteed to produce.
+
+### Three attempts, all net-negative
+
+| Version | Change | CR (archive-backed) |
+|---|---|---|
+| R24 baseline | no routing fix | **8/15 = 53.3%** |
+| R26a | coverage rule + "scope sub-question to pre-2002" | 5/12 = 41.7% |
+| R26b | date-scoping clause removed | 6/14 = 42.9% |
+| R26c | minimal coverage edit | 6/12 = 50.0% |
+
+Like-for-like on the 12 queries archive-backed in R26c, R24 scored **7 passing vs R26c's 6** — still worse.
+
+### Why they failed: prompt bloat broke existing rules
+R26a made the model literally append date text to sub-questions: `'Port-au-Prince économie commerce finance Haïti avant 2002'`. Embeddings do not treat "avant 2002" as a filter — it is noise tokens that dilute the query, and it violated the Round 14 rule against keyword-stuffing that sits three paragraphs above in the same prompt. PaP economy fell 0.71 -> 0.23.
+
+Removing that clause was not enough. Scores kept dropping on queries whose **routing never changed** (restavek 0.68 -> 0.09, Desalin 0.65 -> 0.53). Diagnosis: the added coverage text crowded out earlier instructions. Verified directly — an English query produced a French sub-question (`'agriculture Haiti années 1940'`, violating the same-language rule) and a Creole query produced a Creole one (`'restavek pratik sosyal ayisyen'`, violating the Round 14 Creole->French rule that restavek depends on).
+
+R26c also introduced a real routing error: the PaP economy query dropped `pinecone_search` despite expecting both sources, scoring 0.5 on Tool Correctness (passing only because the threshold is 0.5).
+
+**Generalisable lesson: `_CLASSIFY_PROMPT` is at its instruction-following capacity.** Adding any rule degrades adherence to the rules already there, and the damage lands on queries unrelated to the change — so it is invisible unless per-query scores are compared across runs.
+
+### Resolution: revert the prompt, fix in code
+`_CLASSIFY_PROMPT` restored byte-identical to R24 (verified by diff against commit `fa35886`).
+
+Added `_drop_archive_for_post_archive_years()` — a deterministic post-classification step that strips `pinecone_search` when a query names explicit years that **all** post-date 2002. Cannot interfere with prompt instruction-following. Two guards:
+- **Comparison guard** (`anvan`/`avant`/`before`, `konpare`/`compare`, `istwa`/`histoire`/`history` across all three languages): "life now vs before the 2010 earthquake" keeps the archive, since pre-2002 material genuinely answers the "before" half. The first version wrongly stripped it.
+- **Never strips the only source** — a degraded archive answer beats none.
+
+Vague present-tense queries ("kounye a", "aujourd'hui") name no year and are untouched.
+
+Verified correct on 8 routing cases spanning post-2002 facts, before/after comparisons, pre-2002 history, and no-year present-tense queries.
+
+### Status: NOT eval-validated
+The validation run failed before producing any metrics:
+
+```
+anthropic.BadRequestError: 400 — Your credit balance is too low to access the Anthropic API.
+```
+
+Anthropic API credits are exhausted, which blocks the judge, router, and synthesis models. **Given that three prior routing attempts all regressed despite looking correct in isolation, this change must not be trusted until an eval run confirms it beats R24's 8/15.** Routing-level correctness is necessary but has already proven insufficient.
