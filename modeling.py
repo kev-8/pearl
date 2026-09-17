@@ -185,8 +185,19 @@ def search_pinecone(query: str) -> str:
         include_metadata=True,
         # Needed to score candidates with the quality classifier below.
         include_values=True,
-        # Exclude OCR-empty phantom vectors so they don't consume top_k slots/
-        filter={'text': {'$ne': ''}},
+        filter={
+            # Exclude OCR-empty phantom vectors so they don't consume top_k slots.
+            'text': {'$ne': ''},
+            # Exclude vectors tagged low-quality by the full-index scan
+            # (EVAL_LOG.md Round 24). `$ne` also matches vectors with no `lq`
+            # field, so untagged healthy vectors are unaffected — verified.
+            #
+            # This is a first pass, not a replacement for the client-side
+            # filter below: tagging was driven by the deletion report at
+            # threshold 0.95, whereas query-time filtering runs at 0.85, so
+            # the 0.85-0.95 band was never tagged and is still caught below.
+            'lq': {'$ne': True},
+        },
     )
 
     # Drop garbled/looping chunks before reranking, so the reranker spends its

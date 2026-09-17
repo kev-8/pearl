@@ -1005,3 +1005,49 @@ A modest win. One query flipped to passing; Contextual Relevancy remains 46.7%. 
 1. **105,554 quality-flagged vectors** — not deleted; query-time filtering now suppresses a subset of them per query instead.
 2. **Classifier recall** — 33% at 0.85. More labelled data (cost scales at ~$0.10/1k chunks) would be the direct lever.
 3. Whisper watermark stripping; topical drift; archive coverage gaps.
+
+---
+
+## Round 24 — Tag 105k Flagged Vectors + Server-Side Filtering (2026-09-16)
+
+### Approach
+Chose tagging over deletion for the 105,554 non-empty flagged vectors. `quality_tag_vectors.py` writes a single `lq: true` metadata flag; `modeling.py` adds `'lq': {'$ne': True}` to the Pinecone query filter. No data destroyed, fully reversible via `--untag`, and garbage no longer consumes `top_k` slots.
+
+Verified before running: the flag writes without disturbing `text` or other fields, and — critically — `$ne: True` **also matches vectors with no `lq` field**, so the untagged healthy corpus is unaffected. Had that not held, the filter would have excluded essentially the entire index.
+
+**Result: 105,554 tagged, 0 failures, ~20 min** (16 workers, checkpointed).
+
+### Threshold mismatch caught during implementation
+The plan was to replace client-side filtering with server-side. That would have been a regression: tags came from the deletion dry-run report at threshold **0.95**, while query-time filtering runs at **0.85**, so the 0.85-0.95 band was never tagged and exists nowhere in the report. Swapping one for the other would have silently dropped that band.
+
+Both layers are therefore retained — server-side removes the tagged bulk before candidates are returned, client-side still catches 0.85-0.95. Consequence: `include_values` stays, so the projected ~86KB/query bandwidth saving does **not** materialise. The real gain is that the worst 105k vectors no longer occupy `top_k` slots. Client-side filter activity fell from 12 queries (Round 23) to 7, consistent with the two layers dividing the work rather than duplicating it.
+
+### Results
+
+| Metric | Round 17 | Round 23 | Round 24 |
+|---|---|---|---|
+| **Contextual Relevancy** | 40.0% | 46.7% | **53.3%** |
+| Answer Relevancy | 93.3% | 100% | 100% |
+| Faithfulness | 86.7% | 100% | 100% |
+| Tool Correctness | 100% | 100% | 100% |
+| Source Attribution | 93.3% | 93.3% | 93.3% |
+| Language Consistency | 100% | 100% | 93.3% |
+| Knowledge Retention | 28.6% | 28.6% | 28.6% |
+| Conversation Completeness | 100% | 100% | 100% |
+| Referential Coherence | 100% | 100% | 100% |
+
+Improved: `eval-fr-mixed` 0.47→**0.71 ✅**, `eval-ht-mixed` 0.65→**0.86 ✅**, coffee production 0.67→**0.78 ✅**. `eval-fr-mixed` was the worst score in Round 17 (0.15, failing explicitly on lottery and ice-cream ads) and now passes.
+
+Regressed: `eval-ht-definitional` (restavek) 0.81 ✅→0.68 ❌, agriculture 1940s 0.45→0.18.
+
+### Why regressions happen at all
+Excluding tagged vectors pushes the `top_k` window **deeper into the index**, so freed slots fill with lower-similarity — and often less topically relevant — chunks. Removing garbage does not guarantee the replacement is better. This is a structural property of fixed-`top_k` retrieval with filtering, not a bug, and it caps how much any quality filter can deliver on its own. Language Consistency's single-query drop may be judge variance; one data point cannot distinguish that from a real effect.
+
+### Cumulative
+Contextual Relevancy 40.0% → 53.3% (+13.3pp) since Round 17, with Answer Relevancy and Faithfulness both at 100%.
+
+### Still open
+1. **Classifier recall (~33% at 0.85)** — the binding constraint. More labelled data (~$0.10/1k chunks) is the direct lever.
+2. **Tag/query threshold mismatch** — tags at 0.95, queries at 0.85. Re-tagging at 0.85 would need another full scan (~4h, ~248k RU).
+3. Topical drift and archive coverage gaps — unaffected by chunk quality filtering.
+4. Whisper watermark stripping.
