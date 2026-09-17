@@ -1051,3 +1051,49 @@ Contextual Relevancy 40.0% → 53.3% (+13.3pp) since Round 17, with Answer Relev
 2. **Tag/query threshold mismatch** — tags at 0.95, queries at 0.85. Re-tagging at 0.85 would need another full scan (~4h, ~248k RU).
 3. Topical drift and archive coverage gaps — unaffected by chunk quality filtering.
 4. Whisper watermark stripping.
+
+---
+
+## Round 25 — Classifier Recall: Investigated, Not Improved (2026-09-16)
+
+Recall (~33-42% at 90% precision) was the identified bottleneck. Tested whether it could be raised — free levers first, before buying more labels.
+
+### 1. Better model family — no gain (free)
+On a single split, HistGradientBoosting on embeddings+structural features scored **44.4%** recall@P90 versus LogReg-on-embeddings at **35.9%** — an apparent +8.5pp.
+
+**That was noise.** Under 5-fold CV the ordering reverses and the gap vanishes:
+
+| Model | CV recall@P90 | fold spread |
+|---|---|---|
+| LogReg / embeddings (current) | **42.2%** | 35-56% |
+| HistGB / emb+structural | 40.4% | 27-51% |
+
+Fold variance (±~10pp) dwarfs any between-model difference. Adding the 9 structural features to LogReg gave +2.9pp on a single split — also inside noise. **No model change is justified.** Nearly recommended switching on the strength of one lucky split.
+
+### 2. More labels — marginal, within noise (~$1.50)
+Learning curve, LogReg/embeddings, averaged over 8 seeds:
+
+| Training labels | recall@P90 |
+|---|---|
+| 750 | 28.8% ± 9.2% |
+| 1,500 | 31.9% ± 9.3% |
+| 2,250 | 32.0% ± 9.0% |
+| 3,000 | 36.0% ± 7.7% |
+| 3,750 | 35.0% ± 8.6% |
+
++6pp across a **5x** increase in data, already flattening, and the ±8-9pp noise band exceeds the total gain. Extrapolating to 15k labels suggests maybe +5pp — unmeasurable against this variance. **Not worth buying.**
+
+### 3. LLM judging candidates at query time — hits the same wall
+Tested Haiku directly on chunks the distilled classifier misses. 4/5 correct — but the single "miss" is the informative part.
+
+The classifier scores `"oav** 4.mal a / Ihewefc / TANWS QUE IES / STATIST3QUES PAHUNT / Tar.dís que les stotútiques ci irielíes... denoten! la diminution"` at 0.666, and Round 17's judge cited it as corruption hurting relevancy. But it decodes to *"Tandis que les statistiques ci-[dessus]... dénotent la diminution"* — "While the statistics above show the decrease..." — which is both meaningful **and on-topic** for the agriculture query it was retrieved for.
+
+The LLM called it USABLE. It was arguably right and the "garbage" label wrong.
+
+### Conclusion: recall is limited by genuine ambiguity, not by model or data
+The chunks the classifier misses are disproportionately **degraded-but-meaningful** — the same boundary that defeated wordfreq in Round 19 (garbage and clean French scored 0.84-0.86 identically). No amount of extra labels or model capacity resolves a boundary that human and LLM judges draw differently.
+
+~40% recall at 90% precision appears near the practical ceiling for chunk-level quality classification on this corpus. **Recommendation: stop investing here.** The remaining Contextual Relevancy failures are better attacked as topical-drift and coverage problems, which are distinct and likely more tractable.
+
+### Cost of this round
+$0 — all experiments reused existing labels and embeddings; the LLM test was a single Haiku call.
