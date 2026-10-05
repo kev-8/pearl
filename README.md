@@ -25,6 +25,30 @@ Pearl is an AI research assistant created to celebrate Haiti's rich history, vib
 | Web search | DuckDuckGo |
 | Hosting | Railway |
 
+## Development
+
+Install only the dependency set needed for the task:
+
+```bash
+# Production application
+python -m pip install -r requirements-app.txt
+
+# Data ingestion, OCR, transcription, and quality tooling
+python -m pip install -r requirements-pipeline.txt
+
+# Offline tests and optional live evaluations
+python -m pip install -r requirements-eval.txt
+```
+
+Run the deterministic, network-disabled test suite with `pytest`. It requires no
+API credentials. Run `python eval.py` only when explicitly performing the paid
+provider-backed DeepEval suite; it requires Anthropic, Cohere, and Pinecone
+credentials and is intentionally excluded from required CI.
+
+The pipeline environment also requires the external tools used by the selected
+phase, such as ffmpeg for Whisper and Tesseract/Poppler for OCR. The French NER
+phases require the `fr_core_news_lg` spaCy model.
+
 ## Data
 
 The archive draws from two primary sources:

@@ -23,7 +23,7 @@ import argparse
 import sys
 import time
 
-from modeling import _index
+from modeling import get_index
 
 NAMESPACE = "__default__"
 ID_PREFIX = "chunk-"
@@ -63,6 +63,7 @@ def save_progress(next_id):
 
 
 def main():
+    index = get_index()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--verify", action="store_true", help="verify only, delete nothing")
@@ -79,7 +80,7 @@ def main():
     mode = "EXECUTE (will delete)" if args.execute else "VERIFY ONLY"
     print(f"Mode        : {mode}")
     print(f"Range       : {ID_PREFIX}{start} .. {ID_PREFIX}{end}  ({total:,} ids)")
-    print(f"Index before: {_index.describe_index_stats().get('total_vector_count'):,}\n")
+    print(f"Index before: {index.describe_index_stats().get('total_vector_count'):,}\n")
 
     verified = deleted = missing = 0
     anomalies = []
@@ -90,7 +91,7 @@ def main():
         batch_end = min(cursor + FETCH_BATCH - 1, end)
         ids = [f"{ID_PREFIX}{i}" for i in range(cursor, batch_end + 1)]
 
-        resp = _index.fetch(ids=ids, namespace=NAMESPACE)
+        resp = index.fetch(ids=ids, namespace=NAMESPACE)
         found = resp.vectors
         missing += len(ids) - len(found)
 
@@ -113,7 +114,7 @@ def main():
 
         if args.execute and safe:
             for i in range(0, len(safe), DELETE_BATCH):
-                _index.delete(ids=safe[i:i + DELETE_BATCH], namespace=NAMESPACE)
+                index.delete(ids=safe[i:i + DELETE_BATCH], namespace=NAMESPACE)
             deleted += len(safe)
             save_progress(batch_end + 1)
 
@@ -131,7 +132,7 @@ def main():
     print(f"Already absent      : {missing:,}")
     print(f"Anomalies           : {len(anomalies)}")
     if args.execute:
-        print(f"\nIndex after: {_index.describe_index_stats().get('total_vector_count'):,}")
+        print(f"\nIndex after: {index.describe_index_stats().get('total_vector_count'):,}")
     else:
         print("\nVERIFY ONLY — nothing deleted. Re-run with --execute to delete.")
 

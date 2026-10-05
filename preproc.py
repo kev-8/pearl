@@ -5,12 +5,12 @@ import time
 import json
 import logging
 
-import cohere
 import pandas as pd
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pinecone import Pinecone
 
 from quality_filter_candidate import score_chunk_quality
+from embeddings import generate_text_embeddings, normalize_embeddings
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -40,55 +40,6 @@ def doc_to_text_list(doc_list):
         else:
             output.append(str(d))
     return output
-
-
-def generate_text_embeddings(body, model_id="embed-v4.0", region_name='us-east-1'):
-    """
-    Generate text embeddings using the Cohere API.
-    Args:
-        body (bytes): JSON-encoded request body with 'texts' and 'input_type' keys.
-        model_id (str): The Cohere model ID to use.
-        region_name (str): Unused; kept for interface compatibility.
-    Returns:
-        dict: {'embeddings': list_of_vectors}
-    """
-    body_dict = json.loads(body)
-    texts = body_dict.get('texts', [])
-    input_type = body_dict.get('input_type', 'search_document')
-
-    co = cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
-    response = co.embed(
-        texts=texts,
-        model=model_id,
-        input_type=input_type,
-        embedding_types=['float'],
-    )
-    return {'embeddings': response.embeddings.float_}
-
-
-def normalize_embeddings(embeddings, expected_n=None):
-    """
-    Normalize different possible shapes of embeddings into a flat list:
-      - If embeddings is a dict mapping indices->vector -> convert to sorted list
-      - If already a list, return as-is
-    Optionally check against expected_n (number of input texts) and log a warning.
-    """
-    if isinstance(embeddings, dict):
-        try:
-            items = sorted(embeddings.items(), key=lambda kv: int(kv[0]))
-            flat = [v for k, v in items]
-            if expected_n is not None and len(flat) != expected_n:
-                logger.warning("embeddings dict length != expected_n: %d != %s", len(flat), expected_n)
-            return flat
-        except Exception:
-            return list(embeddings.values())
-
-    if isinstance(embeddings, list):
-        if expected_n is not None and len(embeddings) != expected_n:
-            logger.warning("embeddings list length != expected_n: %d != %s", len(embeddings), expected_n)
-        return embeddings
-
-    raise ValueError(f"Unexpected embeddings type: {type(embeddings)}")
 
 
 # ---------------------------------------------------------------------------

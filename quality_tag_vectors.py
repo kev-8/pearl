@@ -23,7 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
-from modeling import _index
+from modeling import get_index
 
 NAMESPACE = "__default__"
 REPORT_PATH = "quality_delete_dryrun_report.csv"
@@ -51,6 +51,7 @@ def load_progress():
 
 
 def main():
+    index = get_index()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true", help="report only, write nothing")
@@ -78,7 +79,7 @@ def main():
     progress = open(PROGRESS_PATH, "a" if args.tag else "w")
 
     def update(vid):
-        _index.update(id=vid, set_metadata={"lq": value}, namespace=NAMESPACE)
+        index.update(id=vid, set_metadata={"lq": value}, namespace=NAMESPACE)
         return vid
 
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:

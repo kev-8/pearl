@@ -1146,3 +1146,38 @@ anthropic.BadRequestError: 400 — Your credit balance is too low to access the 
 ```
 
 Anthropic API credits are exhausted, which blocks the judge, router, and synthesis models. **Given that three prior routing attempts all regressed despite looking correct in isolation, this change must not be trusted until an eval run confirms it beats R24's 8/15.** Routing-level correctness is necessary but has already proven insufficient.
+
+---
+
+## Round 27 — Authoritative Execution Traces + Offline Regression Tests (2026-09-27)
+
+### Evaluation harness correction
+
+The evaluator previously reconstructed routing and archive retrieval before
+running the production pipeline a second time. That reconstruction omitted the
+production `lq` metadata filter and client-side quality classifier, so
+`tools_called`, `retrieval_context`, and `actual_output` could describe different
+executions and different evidence.
+
+Production and evaluation now share one synchronous query runner. Each turn is
+classified once and returns the answer together with an in-memory trace of the
+actual routed subqueries and final post-filter/post-rerank evidence. DeepEval
+fields are derived from that trace rather than issuing duplicate provider calls.
+Parallel source retrieval is restored to routing order before synthesis, making
+the source prompt stable across runs.
+
+### Deterministic coverage
+
+Added network-disabled tests for routing guards, history limits, production
+Pinecone query parameters, evidence formatting, source ordering, streamed token
+assembly, stage-specific failures, Dash stream compatibility, and single-/multi-
+turn DeepEval mapping. Provider clients and judge metrics are now initialized
+lazily, so these tests require no credentials or paid calls. Required GitHub CI
+runs them on Python 3.12.
+
+### Baseline discontinuity
+
+No live quality scores are recorded in this round. The next paid DeepEval run
+must be treated as a new baseline: its retrieval metrics will measure the actual
+evidence used by synthesis and are therefore not directly comparable with prior
+reconstructed-context scores.

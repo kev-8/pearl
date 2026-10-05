@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  deterministic-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-app.txt
+            requirements-eval.txt
+      - name: Install evaluation dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-eval.txt
+      - name: Parse and compile tracked Python sources
+        run: |
+          python - <<'PY'
+          import ast
+          import pathlib
+          import subprocess
+
+          files = subprocess.check_output(["git", "ls-files", "*.py"], text=True).splitlines()
+          for filename in files:
+              source = pathlib.Path(filename).read_text(encoding="utf-8")
+              ast.parse(source, filename=filename)
+              compile(source, filename, "exec")
+          print(f"Parsed and compiled {len(files)} Python files")
+          PY
+      - name: Run offline tests
+        run: pytest

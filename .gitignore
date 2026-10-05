@@ -7,7 +7,11 @@ quality_distill_requests.jsonl
 *.csv
 *.gif
 *.txt
+!requirements.txt
+!requirements-*.txt
 __pycache__/
+.coverage
+htmlcov/
 dloc/data/
 radiohaiti/data/
 *.log

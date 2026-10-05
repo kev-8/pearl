@@ -1,0 +1,18 @@
+-r requirements-app.txt
+
+# Chunking and data processing
+langchain-text-splitters==1.0.0
+pandas==2.3.3
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+spacy>=3.7.0
+wordfreq>=3.0.0
+scikit-learn>=1.5,<2
+
+# OCR and transcription
+openai-whisper>=20240930
+mlx-whisper>=0.4.0; platform_system == "Darwin" and platform_machine == "arm64"
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+Pillow>=10.0.0

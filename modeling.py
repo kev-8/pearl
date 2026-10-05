@@ -1,34 +1,56 @@
 import threading
-import pandas as pd
 import numpy as np
 import logging
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable, Iterable, Sequence
+from functools import lru_cache
 from pinecone import Pinecone
 from ddgs import DDGS
 import cohere
-import operator
 import re
-from typing import Annotated, Literal, TypedDict
-from langchain.agents import create_agent
-from langchain.tools import tool
+from typing import Literal, TypedDict
+from langchain_core.tools import tool
 from langchain_anthropic import ChatAnthropic
-from langgraph.graph import StateGraph, START, END
-from langgraph.types import Send
-from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, Field
-from preproc import generate_text_embeddings, normalize_embeddings
+from embeddings import generate_text_embeddings, normalize_embeddings
 from quality_filter_candidate import score_chunk_quality
+from query_pipeline import (
+    EvidenceRecord,
+    PipelineResult,
+    PipelineServices,
+    RoutingDecision,
+    SourceRun,
+    format_history,
+    run_query as _run_query_core,
+)
 
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger('botocore.credentials').setLevel(logging.WARNING)
 
-_pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
-_index = _pc.Index('index-1')
-_co = cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
+@lru_cache(maxsize=1)
+def get_index():
+    """Construct the Pinecone index on first use, not module import."""
+    pc = Pinecone(api_key=os.getenv('PINECONE_API_KEY'))
+    return pc.Index('index-1')
+
+
+@lru_cache(maxsize=1)
+def _get_rerank_client():
+    """Construct the Cohere rerank client on first use."""
+    return cohere.ClientV2(api_key=os.getenv('COHERE_API_KEY'))
+
+
+@lru_cache(maxsize=1)
+def _get_router_model():
+    return ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
+
+
+@lru_cache(maxsize=1)
+def _get_synthesis_model():
+    return ChatAnthropic(model="claude-sonnet-4-5-20250929")
 
 # Raised from 10 to 14 because the quality filter below now drops candidates
 # before reranking; fetching more keeps roughly the original number of real
@@ -117,7 +139,7 @@ def rerank_matches(query: str, matches: list[dict]) -> list[dict]:
 
     orig_indices, docs = zip(*non_empty)
     try:
-        response = _co.rerank(
+        response = _get_rerank_client().rerank(
             model="rerank-v3.5",
             query=query,
             documents=list(docs),
@@ -156,12 +178,12 @@ class Classification(TypedDict):
 class RouterState(TypedDict):
     query: str
     classifications: list[Classification]
-    results: Annotated[list[AgentOutput], operator.add]
+    results: list[AgentOutput]
     final_answer: str
 
-@tool
-def search_pinecone(query: str) -> str:
-    """Search the Pinecone vector database for relevant documents."""
+
+def search_archive(query: str) -> SourceRun:
+    """Search the archive and return formatted output plus final evidence."""
     body_dict = {
         "texts": [query],
         "input_type": 'search_query',
@@ -179,7 +201,7 @@ def search_pinecone(query: str) -> str:
     output = response_json.get('embeddings') or response_json.get('embedding')
     embeddings = normalize_embeddings(output, expected_n=1)
 
-    results = _index.query(
+    results = get_index().query(
         namespace='__default__',
         vector=embeddings[0],
         top_k=_RERANK_FETCH_K,
@@ -207,6 +229,7 @@ def search_pinecone(query: str) -> str:
     matches = rerank_matches(query, matches)
 
     lines = []
+    evidence = []
     for i, match in enumerate(matches, start=1):
         meta = match.get('metadata', {})
         date = meta.get('sqldate', 'unknown date')
@@ -225,42 +248,57 @@ def search_pinecone(query: str) -> str:
             lines.append(f'    "{text}"')
         lines.append('')
 
-    return '\n'.join(lines) if lines else 'No results found.'
+        evidence.append(EvidenceRecord(
+            source="pinecone_search",
+            vector_id=str(match.get('id', '')) or None,
+            archive=archive,
+            date=str(date) if date else None,
+            url=str(source) if source else None,
+            text=text,
+        ))
+
+    return SourceRun(
+        source="pinecone_search",
+        query=query,
+        result_text='\n'.join(lines) if lines else 'No results found.',
+        evidence=tuple(evidence),
+    )
+
 
 @tool
-def search_web(query: str) -> dict:
+def search_pinecone(query: str) -> str:
+    """Search the Pinecone vector database for relevant documents."""
+    return search_archive(query).result_text
+
+
+def _fetch_web_results(query: str) -> list[dict]:
+    return list(DDGS().text(query, max_results=5))
+
+
+def search_web_source(query: str) -> SourceRun:
+    """Search the web and retain the snippets passed to synthesis."""
+    results = _fetch_web_results(query)
+    evidence = tuple(
+        EvidenceRecord(
+            source="web_search",
+            text=str(result.get("body") or result.get("snippet") or ""),
+            url=result.get("href") or result.get("url"),
+            title=result.get("title"),
+        )
+        for result in results
+    )
+    return SourceRun(
+        source="web_search",
+        query=query,
+        result_text=str(results),
+        evidence=evidence,
+    )
+
+
+@tool
+def search_web(query: str) -> list[dict]:
     """Search the web using DuckDuckGo Search API."""
-    search_results = DDGS().text(query, max_results=5)
-    return search_results
-
-# model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
-# model = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
-
-# retriever_agent = create_agent(
-#     model=model,
-#     tools=[search_pinecone],
-#     name='retriever_agent',
-#     system_prompt=(
-#         "You are a specialist in the Le Nouvelliste archive — a Haitian newspaper published continuously since 1898, "
-#         "written primarily in French and Haitian Creole. Your job is to search the archive and extract relevant "
-#         "historical facts. Always cite the article date and source URL from the metadata. Organize your findings "
-#         "clearly, noting the time period and context."
-#     ),
-# )
-
-# web_search_agent = create_agent(
-#     model=model,
-#     tools=[search_web],
-#     name='web_search_agent',
-#     system_prompt=(
-#         "You are searching for supplementary and current information about Haiti to complement a historical archive. "
-#         "Prioritize credible, authoritative sources (academic institutions, reputable journalism, government and NGO reports). "
-#         "Always cite the source URL for every claim. Organize results clearly."
-#     ),
-# )
-
-router_model = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
-synthesis_model = ChatAnthropic(model="claude-sonnet-4-5-20250929")
+    return _fetch_web_results(query)
 
 # Define structured output schema for the classifier
 class ClassificationResult(BaseModel):
@@ -381,7 +419,7 @@ def _drop_archive_for_post_archive_years(query: str, classifications: list) -> l
 
 def classify_query(state: RouterState, history_str: str = "") -> dict:
     """Classify query and determine which agents to invoke."""
-    structured_llm = router_model.with_structured_output(ClassificationResult)
+    structured_llm = _get_router_model().with_structured_output(ClassificationResult)
 
     system = _CLASSIFY_PROMPT
     if history_str:
@@ -398,43 +436,88 @@ def classify_query(state: RouterState, history_str: str = "") -> dict:
     return {"classifications": classifications}
 
 
-def route_to_agents(state: RouterState) -> list[Send]:
-    """Fan out to agents based on classifications."""
-    return [
-        Send(c["source"], {"query": c["query"]})
-        for c in state["classifications"]
-    ]
-
-
-# def query_pinecone(state: AgentInput) -> dict:
-#     result = retriever_agent.invoke({"messages": [{"role": "user", "content": state["query"]}]})
-#     return {"results": [{"source": "pinecone_search", "result": result["messages"][-1].content}]}
-
-# def query_web_search(state: AgentInput) -> dict:
-#     result = web_search_agent.invoke({"messages": [{"role": "user", "content": state["query"]}]})
-#     return {"results": [{"source": "web_search", "result": result["messages"][-1].content}]}
-
-
 # ── Streaming pipeline ────────────────────────────────────────────────────────
 
 def _format_history(history: list[dict], max_turns: int = 4) -> str:
-    """Format the last N messages as a plain-text context string."""
-    if not history:
-        return ""
-    recent = history[-(max_turns * 2):]
-    return "\n".join(
-        f"{'User' if m['role'] == 'user' else 'Pearl'}: {m['content'][:1500]}"
-        for m in recent
+    """Backward-compatible wrapper around the shared history formatter."""
+    return format_history(history, max_turns=max_turns)
+
+
+def _message_chunk_text(content) -> str:
+    """Extract text from LangChain string or content-block chunks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+class ProductionPipelineServices:
+    """Provider adapters used by the live application and evaluation suite."""
+
+    def classify(self, query: str, history_text: str) -> Sequence[RoutingDecision]:
+        state: RouterState = {
+            "query": query,
+            "classifications": [],
+            "results": [],
+            "final_answer": "",
+        }
+        result = classify_query(state, history_text)
+        return tuple(
+            RoutingDecision(source=item["source"], query=item["query"])
+            for item in result.get("classifications", [])
+        )
+
+    def search_archive(self, query: str) -> SourceRun:
+        return search_archive(query)
+
+    def search_web(self, query: str) -> SourceRun:
+        return search_web_source(query)
+
+    def stream_synthesis(
+        self,
+        query: str,
+        history_text: str,
+        source_runs: Sequence[SourceRun],
+    ) -> Iterable[str]:
+        formatted_results = "\n\n".join(
+            f"**From {source_run.source.title()}:**\n{source_run.result_text}"
+            for source_run in source_runs
+        )
+        system = _SYNTHESIS_PROMPT
+        if history_text:
+            system += (
+                "\n\nConversation context (use for continuity and pronoun resolution):\n"
+                f"{history_text}"
+            )
+
+        for chunk in _get_synthesis_model().stream([
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Question: {query}\n\n{formatted_results}"},
+        ]):
+            text = _message_chunk_text(chunk.content)
+            if text:
+                yield text
+
+
+def run_query(
+    query: str,
+    history: list[dict],
+    *,
+    services: PipelineServices | None = None,
+    on_token: Callable[[str], None] | None = None,
+) -> PipelineResult:
+    """Run the shared production pipeline synchronously."""
+    return _run_query_core(
+        query,
+        history,
+        services=services if services is not None else ProductionPipelineServices(),
+        on_token=on_token,
     )
-
-
-def _run_source(classification: Classification) -> list[AgentOutput]:
-    """Call the tool directly — no LLM agent wrapper."""
-    if classification["source"] == "pinecone_search":
-        result = search_pinecone.invoke({"query": classification["query"]})
-        return [{"source": "pinecone_search", "result": result}]
-    result = search_web.invoke({"query": classification["query"]})
-    return [{"source": "web_search", "result": str(result)}]
 
 
 def _stream_query(query: str, history: list[dict], buffer_id: str) -> None:
@@ -443,46 +526,13 @@ def _stream_query(query: str, history: list[dict], buffer_id: str) -> None:
     Intended to be called in a background thread via start_stream().
     """
     try:
-        history_str = _format_history(history)
+        def append_token(token: str) -> None:
+            _stream_buffers[buffer_id]["text"] += token
 
-        # 1. Classify — history-aware so follow-ups resolve correctly
-        classified = classify_query({"query": query, "classifications": [], "results": [], "final_answer": ""}, history_str)
-        classifications = classified.get("classifications", [])
-
-        if not classifications:
-            _stream_buffers[buffer_id]["text"] = "I wasn't sure how to search for that — could you rephrase?"
-            return
-
-        # 2. Fan-out retrieval in parallel (mirrors original LangGraph Send behaviour)
-        results: list[AgentOutput] = []
-        with ThreadPoolExecutor(max_workers=len(classifications)) as executor:
-            futures = [executor.submit(_run_source, c) for c in classifications]
-            for future in as_completed(futures):
-                results.extend(future.result())
-
-        if not results:
-            _stream_buffers[buffer_id]["text"] = "No results found from any knowledge source."
-            return
-
-        # 3. Stream synthesis — always run through Haiku so history context
-        #    is injected and output is consistently formatted markdown.
-        formatted_results = "\n\n".join(
-            f"**From {r['source'].title()}:**\n{r['result']}" for r in results
-        )
-
-        system = _SYNTHESIS_PROMPT
-        if history_str:
-            system += f"\n\nConversation context (use for continuity and pronoun resolution):\n{history_str}"
-
-        for chunk in synthesis_model.stream([
-            {"role": "system", "content": system},
-            {"role": "user", "content": f"Question: {query}\n\n{formatted_results}"},
-        ]):
-            if chunk.content:
-                _stream_buffers[buffer_id]["text"] += chunk.content
+        run_query(query, history, on_token=append_token)
 
     except Exception as err:
-        logger.error("Streaming error: %s", err)
+        logger.exception("Streaming error: %s", err)
         _stream_buffers[buffer_id]["text"] = "An error occurred while processing your request."
     finally:
         _stream_buffers[buffer_id]["done"] = True
@@ -505,36 +555,3 @@ def get_stream_state(buffer_id: str) -> tuple[str, bool]:
 
 
 # ── Legacy workflow (kept for reference) ─────────────────────────────────────
-
-# workflow = (
-#     StateGraph(RouterState)
-#     .add_node("classify", classify_query)
-#     .add_node("pinecone_search", query_pinecone)
-#     .add_node("web_search", query_web_search)
-#     .add_node("synthesize", synthesize_results)
-#     .add_edge(START, "classify")
-#     .add_conditional_edges("classify", route_to_agents, ["pinecone_search", "web_search"])
-#     .add_edge("pinecone_search", "synthesize")
-#     .add_edge("web_search", "synthesize")
-#     .add_edge("synthesize", END)
-#     .compile()
-# )
-
-# @tool
-# def search_knowledge_sources(query: str) -> str:
-#     answer = workflow.invoke({"query": query})
-#     return answer["final_answer"]
-
-# conversational_agent = create_agent(
-#     model=model,
-#     tools=[search_knowledge_sources],
-#     system_prompt=(
-#         "You are Pearl, an AI research assistant specialized in Haitian history and culture, powered by the "
-#         "Le Nouvelliste archive — Haiti's oldest newspaper, published since 1898 — and live web search. "
-#         "You can answer questions in English, French, and Haitian Creole. "
-#         "Use the `search_knowledge_sources` tool for every substantive question. "
-#         "Synthesize historical archive results with contemporary context when relevant. "
-#         "Be precise about dates and sources. When the user's question is ambiguous, ask for clarification before searching."
-#     ),
-#     checkpointer=InMemorySaver()
-# )

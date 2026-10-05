@@ -25,7 +25,7 @@ from collections import Counter
 import numpy as np
 import pandas as pd
 
-from modeling import _index
+from modeling import get_index
 from quality_filter_candidate import score_chunk_quality
 
 NAMESPACE = "__default__"
@@ -90,7 +90,7 @@ def classifier_prob(clf, vector):
     return 1.0 / (1.0 + np.exp(-z))
 
 
-def iter_ids(limit=None, prefix=None):
+def iter_ids(index, limit=None, prefix=None):
     """Stream vector ids from Pinecone, optionally restricted to an id prefix.
 
     Pinecone returns ids in lexical order, so an unrestricted scan yields all
@@ -102,7 +102,7 @@ def iter_ids(limit=None, prefix=None):
     if prefix:
         kwargs["prefix"] = prefix
     seen = 0
-    for page in _index.list(**kwargs):
+    for page in index.list(**kwargs):
         for vid in page:
             yield vid
             seen += 1
@@ -111,6 +111,7 @@ def iter_ids(limit=None, prefix=None):
 
 
 def main():
+    index = get_index()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--limit", type=int, help="scan only the first N vectors")
@@ -122,7 +123,7 @@ def main():
     clf = load_classifier()
     print(f"Classifier: {'loaded, threshold ' + str(clf['threshold']) if clf else 'NOT FOUND (heuristic only)'}")
 
-    stats = _index.describe_index_stats()
+    stats = index.describe_index_stats()
     print(f"Index holds {stats.get('total_vector_count'):,} vectors")
     scope = "ALL" if limit is None else f"first {limit:,}"
     if args.prefix:
@@ -141,7 +142,7 @@ def main():
             return
         # include_values is needed for the classifier; it also costs more read
         # units, so skip it when no classifier is available.
-        resp = _index.fetch(ids=ids, namespace=NAMESPACE)
+        resp = index.fetch(ids=ids, namespace=NAMESPACE)
         fetch_calls += 1
         for vid, vec in resp.vectors.items():
             meta = vec.metadata or {}
@@ -180,7 +181,7 @@ def main():
                 "text": text,
             })
 
-    for vid in iter_ids(limit, prefix=args.prefix):
+    for vid in iter_ids(index, limit, prefix=args.prefix):
         batch_ids.append(vid)
         scanned += 1
         if len(batch_ids) >= FETCH_BATCH:

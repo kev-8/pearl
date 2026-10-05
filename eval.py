@@ -26,16 +26,12 @@ Judge model
   Claude Sonnet 4.5 via Anthropic API
 """
 
-import json
 import logging
 import os
-import time
-import uuid
+from collections.abc import Callable
 from typing import Any, Optional, Type
 
-from botocore.exceptions import ClientError
 from langchain_anthropic import ChatAnthropic
-from pinecone import Pinecone
 from pydantic import BaseModel
 
 from deepeval import evaluate
@@ -59,12 +55,27 @@ from deepeval.test_case import (
     TurnParams,
 )
 
-from modeling import classify_query, start_stream, get_stream_state, RouterState, rerank_matches, _RERANK_FETCH_K, _RERANK_MIN_SCORE, _format_history
-from preproc import generate_text_embeddings, normalize_embeddings
+from modeling import run_query
+from query_pipeline import (
+    ExecutionTrace,
+    PipelineResult,
+)
+from eval_trace import evaluation_trace_data
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 logging.getLogger("botocore.credentials").setLevel(logging.WARNING)
+
+_LIVE_CREDENTIALS = ("ANTHROPIC_API_KEY", "COHERE_API_KEY", "PINECONE_API_KEY")
+
+
+def _require_live_credentials() -> None:
+    missing = [name for name in _LIVE_CREDENTIALS if not os.getenv(name)]
+    if missing:
+        raise SystemExit(
+            "Live evaluation requires explicit provider credentials: "
+            + ", ".join(missing)
+        )
 
 
 # ── Judge model: Claude Sonnet 4.5 via Anthropic API ─────────────────────────
@@ -97,109 +108,41 @@ class AnthropicClaudeJudge(DeepEvalBaseLLM):
         return f"Claude Sonnet 4.5 (Anthropic API / {self._model_id})"
 
 
-judge = AnthropicClaudeJudge()
 
 
 # ── Retrieval helpers ─────────────────────────────────────────────────────────
 
-_pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-_index = _pc.Index("index-1")
 
 
-def get_tools_called(query: str, history_str: str = "") -> list[ToolCall]:
-    """Run classify_query and return a ToolCall for each routing decision."""
-    state: RouterState = {
-        "query": query,
-        "classifications": [],
-        "results": [],
-        "final_answer": "",
-    }
-    result = classify_query(state, history_str)
+def trace_to_tools_called(trace: ExecutionTrace) -> list[ToolCall]:
+    """Convert one real execution trace to DeepEval tool calls."""
+    trace_data = evaluation_trace_data(trace)
     return [
         ToolCall(
-            name=c["source"],
-            input_parameters={"query": c["query"]},
+            name=decision.source,
+            input_parameters={"query": decision.query},
         )
-        for c in result.get("classifications", [])
+        for decision in trace_data.tools_called
     ]
-
-
-def get_retrieval_context(tools_called: list[ToolCall]) -> list[str]:
-    """
-    Return the raw text of each chunk Pinecone actually returned for the
-    pinecone_search sub-queries Pearl issued (per `tools_called`), or []
-    if pinecone_search wasn't called for this turn — e.g. current-events
-    queries routed to web_search only, which the archives can't cover.
-    Reconstructs exactly what `search_pinecone` retrieved, since
-    classify_query is deterministic (router_model runs at temperature=0).
-    """
-    pinecone_calls = [t for t in tools_called if t.name == "pinecone_search"]
-    if not pinecone_calls:
-        return []
-
-    contexts: list[str] = []
-    for call in pinecone_calls:
-        subquery = call.input_parameters.get("query", "")
-        if not subquery:
-            continue
-
-        body_bytes = json.dumps(
-            {"texts": [subquery], "input_type": "search_query"}, ensure_ascii=False
-        ).encode("utf-8")
-        try:
-            response_json = generate_text_embeddings(body_bytes)
-        except ClientError as err:
-            logger.error("Embedding error: %s", err)
-            continue
-
-        output = response_json.get("embeddings") or response_json.get("embedding")
-        embeddings = normalize_embeddings(output, expected_n=1)
-
-        results = _index.query(
-            namespace="__default__",
-            vector=embeddings[0],
-            top_k=_RERANK_FETCH_K,
-            include_metadata=True,
-            filter={"text": {"$ne": ""}},
-        )
-        matches = rerank_matches(subquery, results.get("matches", []))
-        contexts.extend(
-            m.get("metadata", {}).get("text", "")
-            for m in matches
-            if m.get("metadata", {}).get("text")
-        )
-    return contexts
-
-
-def _run_query(query: str, history: list[dict] | None = None) -> str:
-    """Run the full pipeline synchronously and return the complete response text."""
-    buffer_id = f"eval-{uuid.uuid4().hex[:8]}"
-    start_stream(query, history or [], buffer_id)
-    while True:
-        text, done = get_stream_state(buffer_id)
-        if done:
-            return text
-        time.sleep(0.1)
 
 
 def build_test_case(
     query: str,
     expected_sources: list[str],
     thread_id: str,
+    *,
+    runner: Callable[[str, list[dict]], PipelineResult] | None = None,
 ) -> LLMTestCase:
-    """Run the full pipeline for `query` and return a populated LLMTestCase."""
-    logger.info("[%s] Fetching routing decision…", thread_id)
-    tools_called = get_tools_called(query)
-
-    logger.info("[%s] Fetching retrieval context…", thread_id)
-    retrieval_context = get_retrieval_context(tools_called)
-
-    logger.info("[%s] Running query…", thread_id)
-    final_answer = _run_query(query)
+    """Execute `query` once and build a test case from its real trace."""
+    logger.info("[%s] Running query and capturing trace…", thread_id)
+    result = (runner or run_query)(query, [])
+    trace_data = evaluation_trace_data(result.trace)
+    tools_called = trace_to_tools_called(result.trace)
+    retrieval_context = list(trace_data.retrieval_context)
 
     return LLMTestCase(
         input=query,
-        actual_output=final_answer,
+        actual_output=result.answer,
         # Kept as [] rather than collapsed to None for web-only queries:
         # FaithfulnessMetric/ContextualRelevancyMetric require non-None
         # retrieval_context, and [] correctly signals "no archive queried"
@@ -341,92 +284,74 @@ TEST_QUERIES: list[tuple[str, list[str], str]] = [
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
-answer_relevancy = AnswerRelevancyMetric(
-    threshold=0.7,
-    model=judge,
-    include_reason=True,
-)
-
-faithfulness = FaithfulnessMetric(
-    threshold=0.7,
-    model=judge,
-    include_reason=True,
-)
-
-contextual_relevancy = ContextualRelevancyMetric(
-    threshold=0.7,
-    model=judge,
-    include_reason=True,
-)
-
-tool_correctness = ToolCorrectnessMetric(
-    threshold=0.5,
-    model=judge,
-    include_reason=True,
-    # evaluation_params left empty: score purely on name match (correct source chosen),
-    # not on the exact sub-question text passed as input_parameters.
-)
-
-source_attribution = GEval(
-    name="Source Attribution",
-    criteria=(
-        "Evaluate whether the response properly attributes its claims, given which "
-        "tools were actually called (see Tools Called). "
-        "If `pinecone_search` was called: claims drawn from Pearl's archives should "
-        "include a dated archive citation — either Le Nouvelliste (a newspaper, e.g. "
-        "'Le Nouvelliste, 1947-03-12') or Radio Haïti (broadcast transcripts, e.g. "
-        "'Radio Haïti, 1987-11-01'); citations to either archive count equally. "
-        "If `web_search` was called: a source URL is sufficient attribution for "
-        "claims drawn from the web — do NOT require an archive-style citation for "
-        "these, since Pearl's archives only cover roughly 1899-2002 and cannot "
-        "document contemporary events. "
-        "Score 1 if every claim is attributed appropriately for the tool that "
-        "produced it (archive citation for archive-derived claims, URL for "
-        "web-derived claims). "
-        "Score 0 if claims are made with no attribution whatsoever. "
-        "Partial credit for responses that cite some but not all claims, or that "
-        "omit the citation type appropriate to the source actually used."
-    ),
-    evaluation_params=[
-        LLMTestCaseParams.INPUT,
-        LLMTestCaseParams.ACTUAL_OUTPUT,
-        LLMTestCaseParams.TOOLS_CALLED,
-    ],
-    model=judge,
-    threshold=0.6,
-)
-
-language_consistency = GEval(
-    name="Language Consistency",
-    criteria=(
-        "On a scale of 0 to 10, evaluate whether the response is written in the same "
-        "language as the input question. Pearl supports English, French, and Haitian Creole. "
-        "Brief inline citations such as '*Le Nouvelliste, 1947*' or source URLs do not "
-        "count as language switching. "
-        "Score 10 if the main body of the response matches the input language exactly. "
-        "Score 5 if the response is mostly in the correct language but contains untranslated "
-        "passages (e.g., a quoted French excerpt within an English response). "
-        "Score 0 if the response is entirely in a different language from the question."
-    ),
-    evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
-    model=judge,
-    threshold=0.8,
-)
-
-METRICS = [
-    answer_relevancy,
-    faithfulness,
-    contextual_relevancy,
-    tool_correctness,
-    source_attribution,
-    language_consistency,
-]
-
-# ContextualRelevancyMetric judges whether retrieved chunks are relevant to
-# the query — meaningless (and structurally 0) for web-only queries, where
-# retrieval_context is correctly empty because no archive was queried (see
-# Round 9/10). Applied only to test cases where pinecone_search was called.
-WEB_ONLY_METRICS = [m for m in METRICS if m is not contextual_relevancy]
+def build_single_turn_metrics(judge: DeepEvalBaseLLM):
+    """Create live judge metrics only when a paid evaluation is requested."""
+    answer_relevancy = AnswerRelevancyMetric(
+        threshold=0.7, model=judge, include_reason=True
+    )
+    faithfulness = FaithfulnessMetric(
+        threshold=0.7, model=judge, include_reason=True
+    )
+    contextual_relevancy = ContextualRelevancyMetric(
+        threshold=0.7, model=judge, include_reason=True
+    )
+    tool_correctness = ToolCorrectnessMetric(
+        threshold=0.5, model=judge, include_reason=True
+    )
+    source_attribution = GEval(
+        name="Source Attribution",
+        criteria=(
+            "Evaluate whether the response properly attributes its claims, given which "
+            "tools were actually called (see Tools Called). "
+            "If `pinecone_search` was called: claims drawn from Pearl's archives should "
+            "include a dated archive citation — either Le Nouvelliste (a newspaper, e.g. "
+            "'Le Nouvelliste, 1947-03-12') or Radio Haïti (broadcast transcripts, e.g. "
+            "'Radio Haïti, 1987-11-01'); citations to either archive count equally. "
+            "If `web_search` was called: a source URL is sufficient attribution for "
+            "claims drawn from the web — do NOT require an archive-style citation for "
+            "these, since Pearl's archives only cover roughly 1899-2002 and cannot "
+            "document contemporary events. "
+            "Score 1 if every claim is attributed appropriately for the tool that "
+            "produced it (archive citation for archive-derived claims, URL for "
+            "web-derived claims). "
+            "Score 0 if claims are made with no attribution whatsoever. "
+            "Partial credit for responses that cite some but not all claims, or that "
+            "omit the citation type appropriate to the source actually used."
+        ),
+        evaluation_params=[
+            LLMTestCaseParams.INPUT,
+            LLMTestCaseParams.ACTUAL_OUTPUT,
+            LLMTestCaseParams.TOOLS_CALLED,
+        ],
+        model=judge,
+        threshold=0.6,
+    )
+    language_consistency = GEval(
+        name="Language Consistency",
+        criteria=(
+            "On a scale of 0 to 10, evaluate whether the response is written in the same "
+            "language as the input question. Pearl supports English, French, and Haitian Creole. "
+            "Brief inline citations such as '*Le Nouvelliste, 1947*' or source URLs do not "
+            "count as language switching. "
+            "Score 10 if the main body of the response matches the input language exactly. "
+            "Score 5 if the response is mostly in the correct language but contains untranslated "
+            "passages (e.g., a quoted French excerpt within an English response). "
+            "Score 0 if the response is entirely in a different language from the question."
+        ),
+        evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
+        model=judge,
+        threshold=0.8,
+    )
+    metrics = [
+        answer_relevancy,
+        faithfulness,
+        contextual_relevancy,
+        tool_correctness,
+        source_attribution,
+        language_consistency,
+    ]
+    web_only_metrics = [m for m in metrics if m is not contextual_relevancy]
+    return metrics, web_only_metrics
 
 
 # ── Multi-turn helpers ────────────────────────────────────────────────────────
@@ -437,15 +362,16 @@ def build_convo_test_case(
     scenario: str,
     chatbot_role: str,
     expected_outcome: str,
+    *,
+    runner: Callable[[str, list[dict]], PipelineResult] | None = None,
 ) -> ConversationalTestCase:
     """
-    Run a multi-turn conversation through the streaming pipeline, capturing
+    Run a multi-turn conversation through the shared pipeline, capturing
     each assistant response and its retrieval context, then return a
     ConversationalTestCase ready for multi-turn metrics.
 
     `turns_input` is a list of user messages in conversation order.
-    History is accumulated manually and passed into each _run_query call so
-    that Pearl's classify and synthesis prompts receive full conversation context.
+    History is accumulated manually and passed into each shared runner call.
     """
     turns: list[Turn] = []
     history: list[dict] = []
@@ -453,13 +379,9 @@ def build_convo_test_case(
     for user_msg in turns_input:
         logger.info("[%s] User turn: %s", thread_id, user_msg[:60])
 
-        # Mirrors _stream_query: classify with the same history the real
-        # pipeline sees for this turn, so retrieval_context reflects the
-        # sub-query Pearl actually issued (not the raw user message).
-        history_str = _format_history(history)
-        tools_called = get_tools_called(user_msg, history_str)
-        retrieval_context = get_retrieval_context(tools_called)
-        assistant_response = _run_query(user_msg, history)
+        result = (runner or run_query)(user_msg, history)
+        retrieval_context = list(evaluation_trace_data(result.trace).retrieval_context)
+        assistant_response = result.answer
 
         # Update history for the next turn
         history.append({"role": "user", "content": user_msg})
@@ -470,7 +392,7 @@ def build_convo_test_case(
             Turn(
                 role="assistant",
                 content=assistant_response,
-                retrieval_context=retrieval_context or None,
+                retrieval_context=retrieval_context,
             )
         )
 
@@ -613,52 +535,47 @@ CONVO_SCENARIOS: list[tuple[list[str], str, str, str]] = [
 
 # ── Multi-turn metrics ────────────────────────────────────────────────────────
 
-knowledge_retention = KnowledgeRetentionMetric(
-    threshold=0.7,
-    model=judge,
-    include_reason=True,
-)
-
-conversation_completeness = ConversationCompletenessMetric(
-    threshold=0.7,
-    model=judge,
-    include_reason=True,
-)
-
-referential_coherence = ConversationalGEval(
-    name="Referential Coherence",
-    criteria=(
-        "On a scale of 0 to 10, evaluate whether the assistant correctly resolves "
-        "vague references and pronouns in follow-up questions back to entities or "
-        "topics established in earlier turns. Pearl supports English, French, and "
-        "Haitian Creole — common reference words include 'that', 'it', 'they' (EN); "
-        "'en', 'y', 'ça', 'celui-ci' (FR); 'li', 'yo', 'sa' (HT Creole). "
-        "Score 10 if the assistant resolves the reference correctly and answers the "
-        "follow-up in a way that is clearly continuous with the prior turn. "
-        "Score 5 if the assistant partially resolves the reference or asks for "
-        "clarification when the context was unambiguous. "
-        "Score 0 if the assistant ignores the reference and gives an unrelated response."
-    ),
-    evaluation_params=[TurnParams.CONTENT, TurnParams.ROLE],
-    model=judge,
-    threshold=0.7,
-)
-
-CONVO_METRICS = [
-    knowledge_retention,
-    conversation_completeness,
-    referential_coherence,
-]
+def build_conversation_metrics(judge: DeepEvalBaseLLM):
+    """Create live conversation metrics only for an explicit evaluation run."""
+    knowledge_retention = KnowledgeRetentionMetric(
+        threshold=0.7, model=judge, include_reason=True
+    )
+    conversation_completeness = ConversationCompletenessMetric(
+        threshold=0.7, model=judge, include_reason=True
+    )
+    referential_coherence = ConversationalGEval(
+        name="Referential Coherence",
+        criteria=(
+            "On a scale of 0 to 10, evaluate whether the assistant correctly resolves "
+            "vague references and pronouns in follow-up questions back to entities or "
+            "topics established in earlier turns. Pearl supports English, French, and "
+            "Haitian Creole — common reference words include 'that', 'it', 'they' (EN); "
+            "'en', 'y', 'ça', 'celui-ci' (FR); 'li', 'yo', 'sa' (HT Creole). "
+            "Score 10 if the assistant resolves the reference correctly and answers the "
+            "follow-up in a way that is clearly continuous with the prior turn. "
+            "Score 5 if the assistant partially resolves the reference or asks for "
+            "clarification when the context was unambiguous. "
+            "Score 0 if the assistant ignores the reference and gives an unrelated response."
+        ),
+        evaluation_params=[TurnParams.CONTENT, TurnParams.ROLE],
+        model=judge,
+        threshold=0.7,
+    )
+    return [knowledge_retention, conversation_completeness, referential_coherence]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+def main():
+    _require_live_credentials()
+    judge = AnthropicClaudeJudge()
+    metrics, web_only_metrics = build_single_turn_metrics(judge)
+    convo_metrics = build_conversation_metrics(judge)
     print(f"\nPearl — DeepEval evaluation suite")
     print(f"Judge  : {judge.get_model_name()}")
     print(f"Cases  : {len(TEST_QUERIES)} single-turn + {len(CONVO_SCENARIOS)} multi-turn")
-    print(f"Metrics: {[m.__class__.__name__ for m in METRICS]}")
-    print(f"Convo metrics: {[m.__class__.__name__ for m in CONVO_METRICS]}\n")
+    print(f"Metrics: {[m.__class__.__name__ for m in metrics]}")
+    print(f"Convo metrics: {[m.__class__.__name__ for m in convo_metrics]}\n")
 
     # ── Single-turn evaluation ─────────────────────────────────────────────────
     test_cases: list[LLMTestCase] = []
@@ -678,11 +595,11 @@ if __name__ == "__main__":
             web_only_cases.append(tc)
 
     print(f"\nRunning single-turn evaluation ({len(archive_cases)} archive-backed cases)…\n")
-    evaluate(archive_cases, METRICS)
+    evaluate(archive_cases, metrics)
 
     if web_only_cases:
         print(f"\nRunning single-turn evaluation ({len(web_only_cases)} web-only cases, no Contextual Relevancy)…\n")
-        evaluate(web_only_cases, WEB_ONLY_METRICS)
+        evaluate(web_only_cases, web_only_metrics)
 
     # ── Multi-turn evaluation ──────────────────────────────────────────────────
     convo_cases: list[ConversationalTestCase] = []
@@ -698,4 +615,8 @@ if __name__ == "__main__":
         convo_cases.append(cc)
 
     print(f"\nRunning multi-turn evaluation ({len(convo_cases)} conversations)…\n")
-    evaluate(convo_cases, CONVO_METRICS)
+    evaluate(convo_cases, convo_metrics)
+
+
+if __name__ == "__main__":
+    main()
