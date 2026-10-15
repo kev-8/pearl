@@ -49,6 +49,9 @@ The pipeline environment also requires the external tools used by the selected
 phase, such as ffmpeg for Whisper and Tesseract/Poppler for OCR. The French NER
 phases require the `fr_core_news_lg` spaCy model.
 
+Quality calibration, labeling, training, and Pinecone maintenance commands are
+documented in [experiments/README.md](experiments/README.md).
+
 ## Data
 
 The archive draws from two primary sources:

@@ -1,17 +1,36 @@
-# Large data files
-dloc/data/
-embeddings_checkpoint.jsonl
-temp_embeddings.json
+# Only the web app, its assets, and its runtime model belong in the image.
+.git/
+.github/
+.claude/
+.deepeval/
+.pytest_cache/
+.vscode/
 archive/
-
-# Eval
+dloc/
+radiohaiti/
+experiments/
+tests/
 eval.py
+eval_trace.py
+preproc.py
 
-# Python cache
+# Local data, run outputs, and caches can be very large.
+*_embeddings_checkpoint*.jsonl
+*_upsert_progress.txt
+temp_embeddings.json
+quality_*_progress.txt
+*.csv
+*.npy
+*.log
+*.gif
 __pycache__/
 *.pyc
 *.pyo
+.coverage*
+htmlcov/
 
-# Dev / local
+# Development files
 .env
+.env.*
+.DS_Store
 *.md
