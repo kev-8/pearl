@@ -9,9 +9,9 @@ Cost control: --dry-run prints the exact token/cost estimate and writes the
 request file WITHOUT submitting anything. Always dry-run first.
 
 Usage:
-    python quality_distill_label.py --dry-run
-    python quality_distill_label.py --submit
-    python quality_distill_label.py --fetch <batch_id>
+    python -m experiments.quality_distill_label --dry-run
+    python -m experiments.quality_distill_label --submit
+    python -m experiments.quality_distill_label --fetch <batch_id>
 """
 
 import argparse
@@ -23,9 +23,10 @@ import re
 import pandas as pd
 
 from preproc import chunk_dataframe
+from .paths import ROOT
 
-LE_NOUVELLISTE_CSV = "dloc/data/output/le_nouvelliste.csv"
-RADIO_HAITI_CSV = "radiohaiti/data/output/radio_haiti.csv"
+LE_NOUVELLISTE_CSV = ROOT / "dloc/data/output/le_nouvelliste.csv"
+RADIO_HAITI_CSV = ROOT / "radiohaiti/data/output/radio_haiti.csv"
 
 MODEL = "claude-haiku-4-5"
 CHUNKS_PER_CALL = 20          # amortizes the instruction prompt across chunks
@@ -33,8 +34,9 @@ TARGET_LABELS = 5000
 N_ARTICLES_PER_CORPUS = 400   # chunked, then downsampled to TARGET_LABELS
 SEED = 42
 
-REQUESTS_PATH = "quality_distill_requests.jsonl"
-LABELS_PATH = "quality_distill_labels.csv"
+REQUESTS_PATH = ROOT / "quality_distill_requests.jsonl"
+SAMPLE_PATH = ROOT / "quality_distill_sample.csv"
+LABELS_PATH = ROOT / "quality_distill_labels.csv"
 
 # Batch API is 50% off list. Haiku 4.5 list: $1.00/MTok in, $5.00/MTok out.
 PRICE_IN_PER_MTOK = 1.00 * 0.5
@@ -127,14 +129,14 @@ def cmd_prepare(dry_run: bool):
     with open(REQUESTS_PATH, "w") as f:
         for r in requests:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    pd.DataFrame(sample).to_csv("quality_distill_sample.csv", index=False)
+    pd.DataFrame(sample).to_csv(SAMPLE_PATH, index=False)
 
     print(f"Chunks to label : {len(sample)}")
     print(f"Batched calls   : {len(requests)} ({CHUNKS_PER_CALL} chunks/call)")
     print(f"Est. input tok  : {tin:,}")
     print(f"Est. output tok : {tout:,}")
     print(f"Est. cost       : ${cost:.2f}  (Batch API, 50% off {MODEL})")
-    print(f"Wrote {REQUESTS_PATH} and quality_distill_sample.csv")
+    print(f"Wrote {REQUESTS_PATH} and {SAMPLE_PATH}")
     if dry_run:
         print("\nDRY RUN — nothing submitted. Re-run with --submit to send.")
 
@@ -154,7 +156,7 @@ def cmd_submit():
     )
     print(f"Batch submitted: {batch.id}")
     print(f"Status: {batch.processing_status}")
-    print(f"\nWhen it finishes:  python quality_distill_label.py --fetch {batch.id}")
+    print(f"\nWhen it finishes:  python -m experiments.quality_distill_label --fetch {batch.id}")
 
 
 def _parse_labels(text):
@@ -181,7 +183,7 @@ def cmd_fetch(batch_id: str):
     by_custom_id = {
         json.loads(l)["custom_id"]: json.loads(l) for l in open(REQUESTS_PATH)
     }
-    sample = pd.read_csv("quality_distill_sample.csv").set_index("chunk_id")
+    sample = pd.read_csv(SAMPLE_PATH).set_index("chunk_id")
 
     out, failed = [], 0
     for result in client.messages.batches.results(batch_id):

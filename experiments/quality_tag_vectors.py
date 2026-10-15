@@ -12,9 +12,9 @@ and writes a single metadata flag to each. Deliberately NOT a deletion:
 Skips the 400k empty/orphaned vectors (already deleted in Round 21).
 
 Usage:
-    python quality_tag_vectors.py --dry-run
-    python quality_tag_vectors.py --tag
-    python quality_tag_vectors.py --untag     # revert
+    python -m experiments.quality_tag_vectors --dry-run
+    python -m experiments.quality_tag_vectors --tag
+    python -m experiments.quality_tag_vectors --untag  # revert
 """
 
 import argparse
@@ -24,10 +24,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 
 from modeling import get_index
+from .paths import ROOT
 
 NAMESPACE = "__default__"
-REPORT_PATH = "quality_delete_dryrun_report.csv"
-PROGRESS_PATH = "quality_tag_progress.txt"
+REPORT_PATH = ROOT / "quality_delete_dryrun_report.csv"
+PROGRESS_PATH = ROOT / "quality_tag_progress.txt"
 WORKERS = 16
 
 
@@ -51,7 +52,6 @@ def load_progress():
 
 
 def main():
-    index = get_index()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true", help="report only, write nothing")
@@ -68,6 +68,7 @@ def main():
         print(f"\nDRY RUN — would tag {len(ids):,} vectors with lq=true. Nothing written.")
         return
 
+    index = get_index()
     value = not args.untag
     done = load_progress() if args.tag else set()
     todo = [i for i in ids if i not in done]

@@ -15,8 +15,8 @@ text field AND carries no other metadata keys. Anything unexpected aborts the
 run rather than guessing.
 
 Usage:
-    python quality_delete_orphans.py --verify     # check only, delete nothing
-    python quality_delete_orphans.py --execute    # verify, then delete
+    python -m experiments.quality_delete_orphans --verify   # check only
+    python -m experiments.quality_delete_orphans --execute  # verify, then delete
 """
 
 import argparse
@@ -24,6 +24,7 @@ import sys
 import time
 
 from modeling import get_index
+from .paths import ROOT
 
 NAMESPACE = "__default__"
 ID_PREFIX = "chunk-"
@@ -33,7 +34,7 @@ EXPECTED_COUNT = RANGE_END - RANGE_START + 1  # 400,000
 
 FETCH_BATCH = 500            # ids per fetch (verification)
 DELETE_BATCH = 500           # ids per delete call
-PROGRESS_PATH = "quality_delete_orphans_progress.txt"
+PROGRESS_PATH = ROOT / "quality_delete_orphans_progress.txt"
 
 # A healthy vector carries these. An orphan carries none of them (only an
 # empty "text"). Presence of any means we are NOT looking at an orphan.
@@ -63,7 +64,6 @@ def save_progress(next_id):
 
 
 def main():
-    index = get_index()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--verify", action="store_true", help="verify only, delete nothing")
@@ -71,6 +71,7 @@ def main():
     ap.add_argument("--limit", type=int, help="only process the first N ids (testing)")
     args = ap.parse_args()
 
+    index = get_index()
     start = load_progress() if args.execute else RANGE_START
     end = RANGE_END
     if args.limit:

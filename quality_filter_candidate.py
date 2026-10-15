@@ -1,13 +1,7 @@
-"""Candidate chunk-level OCR/transcription quality filter.
+"""Chunk-level OCR/transcription quality filter used by the app and ingestion.
 
-SCRATCH / STAGING MODULE — not wired into preproc.py. Lives here so
-preproc_quality_filter_calibration.py can import and iterate on it without
-touching the production chunking path. Once thresholds are validated against
-the calibration report, promote score_chunk_quality (and its constants) into
-preproc.py, applied in lockstep with chunk_row_indices (see EVAL_LOG.md
-Round 15 / the Phase 1 plan for why lockstep filtering matters).
-
-See EVAL_LOG.md "Round 15 — OCR Re-Index: Scope" for full background.
+The calibration command lives in experiments/. See EVAL_LOG.md Rounds 15 and
+23 for the filter's development and production rollout.
 """
 
 import re

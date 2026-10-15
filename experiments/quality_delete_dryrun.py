@@ -12,8 +12,8 @@ text of each condemned chunk so the action is reversible (those chunks can be
 re-embedded and re-upserted under their original ids if we regret it).
 
 Usage:
-    python quality_delete_dryrun.py --limit 5000        # small slice first
-    python quality_delete_dryrun.py --all               # full corpus scan
+    python -m experiments.quality_delete_dryrun --limit 5000  # small slice first
+    python -m experiments.quality_delete_dryrun --all         # full corpus scan
 """
 
 import argparse
@@ -27,11 +27,12 @@ import pandas as pd
 
 from modeling import get_index
 from quality_filter_candidate import score_chunk_quality
+from .paths import ROOT
 
 NAMESPACE = "__default__"
 FETCH_BATCH = 500          # Pinecone fetch() ids per call
-REPORT_PATH = "quality_delete_dryrun_report.csv"
-CLASSIFIER_PATH = "quality_distill_model.json"
+REPORT_PATH = ROOT / "quality_delete_dryrun_report.csv"
+CLASSIFIER_PATH = ROOT / "quality_distill_model.json"
 
 # Deliberately STRICTER than the model's own 0.85 (quality_distill_train.py).
 # Those two numbers answer different questions:
@@ -111,7 +112,6 @@ def iter_ids(index, limit=None, prefix=None):
 
 
 def main():
-    index = get_index()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--limit", type=int, help="scan only the first N vectors")
@@ -120,6 +120,7 @@ def main():
     args = ap.parse_args()
     limit = None if args.all else args.limit
 
+    index = get_index()
     clf = load_classifier()
     print(f"Classifier: {'loaded, threshold ' + str(clf['threshold']) if clf else 'NOT FOUND (heuristic only)'}")
 

@@ -5,20 +5,21 @@ Phase 1). Read-only against the CSVs; writes only its own report file.
 
 
 Usage:
-    /Users/kevin/Desktop/ds/environments/pearl_env/bin/python preproc_quality_filter_calibration.py
+    python -m experiments.preproc_quality_filter_calibration
 """
 
 import pandas as pd
 
 from preproc import chunk_dataframe
 from quality_filter_candidate import score_chunk_quality
+from .paths import ROOT
 
-LE_NOUVELLISTE_CSV = "dloc/data/output/le_nouvelliste.csv"
-RADIO_HAITI_CSV = "radiohaiti/data/output/radio_haiti.csv"
+LE_NOUVELLISTE_CSV = ROOT / "dloc/data/output/le_nouvelliste.csv"
+RADIO_HAITI_CSV = ROOT / "radiohaiti/data/output/radio_haiti.csv"
 
 SAMPLE_N_ARTICLES = 300
 SEED = 42
-REPORT_PATH = "quality_filter_calibration_report.csv"
+REPORT_PATH = ROOT / "quality_filter_calibration_report.csv"
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ anyway, so at re-index time this classifier runs over all ~2.5M chunks at zero
 marginal cost — no per-chunk API call, no second pass over the corpus.
 
 Usage:
-    python quality_distill_train.py
+    python -m experiments.quality_distill_train
 """
 
 import json
@@ -20,12 +20,13 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.model_selection import train_test_split
 
-from preproc import generate_text_embeddings, normalize_embeddings
+from embeddings import generate_text_embeddings, normalize_embeddings
 from quality_filter_candidate import score_chunk_quality
+from .paths import ROOT
 
-LABELS_PATH = "quality_distill_labels.csv"
-EMBED_CACHE = "quality_distill_embeddings.npy"
-MODEL_PATH = "quality_distill_model.json"
+LABELS_PATH = ROOT / "quality_distill_labels.csv"
+EMBED_CACHE = ROOT / "quality_distill_embeddings.npy"
+MODEL_PATH = ROOT / "quality_distill_model.json"
 
 EMBED_BATCH = 96  # Cohere embed v4 batch limit
 SEED = 42
