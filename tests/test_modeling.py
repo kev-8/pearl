@@ -127,6 +127,53 @@ def test_message_chunk_text_supports_string_and_blocks():
     assert modeling._message_chunk_text(None) == ""
 
 
+@pytest.mark.parametrize("include_archive", [True, False])
+def test_web_failure_continues_synthesis_without_fabricated_evidence(monkeypatch, include_archive):
+    def unavailable(query):
+        raise RuntimeError('Invalid impersonate: "chrome_118"')
+
+    monkeypatch.setattr(modeling, "_fetch_web_results", unavailable)
+    decisions = [RoutingDecision("web_search", "current")]
+    if include_archive:
+        decisions.insert(0, RoutingDecision("pinecone_search", "history"))
+    services = modeling.ProductionPipelineServices()
+    monkeypatch.setattr(services, "classify", lambda *args: decisions)
+    monkeypatch.setattr(
+        services, "search_archive",
+        lambda query: SourceRun("pinecone_search", query, "archive evidence"),
+    )
+    received = []
+
+    def synthesize(query, history, runs):
+        received.extend(runs)
+        yield "Answer with search limitation"
+
+    monkeypatch.setattr(services, "stream_synthesis", synthesize)
+    tokens = []
+    result = modeling.run_query("question", [], services=services, on_token=tokens.append)
+    assert result.answer == "Answer with search limitation"
+    assert tokens == [result.answer]
+    assert tuple(received) == result.trace.source_runs
+    web_run = received[-1]
+    assert web_run.evidence == ()
+    assert "temporarily unavailable" in web_run.result_text
+    assert "do not claim" in web_run.result_text
+    assert "chrome_118" not in web_run.result_text
+    if include_archive:
+        assert received[0].result_text == "archive evidence"
+
+
+def test_search_dependency_supports_every_configured_browser_profile():
+    import primp
+    from ddgs.http_client import HttpClient
+
+    # Construct clients without network requests; random profile selection made
+    # the production incompatibility intermittent across requests.
+    for profile in HttpClient._impersonates:
+        for platform in HttpClient._impersonates_os:
+            primp.Client(impersonate=profile, impersonate_os=platform)
+
+
 def test_production_synthesis_uses_ordered_source_text(monkeypatch):
     captured = {}
 

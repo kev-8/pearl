@@ -277,7 +277,20 @@ def _fetch_web_results(query: str) -> list[dict]:
 
 def search_web_source(query: str) -> SourceRun:
     """Search the web and retain the snippets passed to synthesis."""
-    results = _fetch_web_results(query)
+    try:
+        results = _fetch_web_results(query)
+    except Exception:
+        logger.exception("Web search unavailable; continuing with available sources")
+        return SourceRun(
+            source="web_search",
+            query=query,
+            result_text=(
+                "Web search is temporarily unavailable. No web evidence was retrieved. "
+                "Tell the user this limitation. Use available archive evidence, and do "
+                "not claim to have verified current information. If the question requires "
+                "web evidence, explain that it cannot be verified and suggest trying again."
+            ),
+        )
     evidence = tuple(
         EvidenceRecord(
             source="web_search",

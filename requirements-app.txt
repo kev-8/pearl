@@ -10,6 +10,8 @@ langchain-core==1.2.16
 # Retrieval
 pinecone==8.0.0
 ddgs==9.9.3
+# DDGS 9.9.3 uses browser profiles removed in newer primp releases.
+primp==0.15.0
 cohere>=5.0.0
 numpy==2.3.5
 pydantic==2.12.5
