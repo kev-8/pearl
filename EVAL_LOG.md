@@ -1181,3 +1181,215 @@ No live quality scores are recorded in this round. The next paid DeepEval run
 must be treated as a new baseline: its retrieval metrics will measure the actual
 evidence used by synthesis and are therefore not directly comparable with prior
 reconstructed-context scores.
+
+---
+
+## Round 28 — First Live Baseline with Authoritative Traces (2026-10-15)
+
+The first completed live run after Round 27 used the shared production/evaluation
+runner and Claude Sonnet 5.5 as the DeepEval judge. The terminal paste began at
+the last archive case, but all 17 completed single-turn cases were recovered
+from DeepEval's local `.deepeval/.deepeval-cache.json`; their Duvalier scores
+match the pasted output. The seven conversational cases were checked against
+`.deepeval/.latest_test_run.json`. Both local JSON files contain raw responses
+and evidence and are ignored by Git; this log records only summary scores and
+diagnoses. DeepEval reported `token cost: None`, meaning cost was not measured,
+not that the paid run was free.
+The cache also contains four older/partial entries, excluded by requiring all
+metrics to have scores and the judge ID to match this completed run.
+
+### Headline results
+
+| Cohort | Metric | Pass rate |
+|---|---|---:|
+| Archive-backed, 14 cases | Answer Relevancy | 13/14 (92.9%) |
+| | Faithfulness | 14/14 (100%) |
+| | Contextual Relevancy | **4/14 (28.6%)** |
+| | Tool Correctness | 14/14 (100%) |
+| | Source Attribution | 14/14 (100%) |
+| | Language Consistency | 10/14 (71.4%) |
+| | All metrics passed | **3/14 (21.4%)** |
+| Web-only, 3 cases | All applied metrics passed | 3/3 (100%) |
+| Conversational, 7 cases | Knowledge Retention | **0/7 (0%)** |
+| | Conversation Completeness | 6/7 (85.7%) |
+| | Referential Coherence | 7/7 (100%) |
+| | All metrics passed | 0/7 (0%) |
+
+### Single-turn case breakdown
+
+`CR` is Contextual Relevancy and `LC` is Language Consistency. A dash means
+no archive context and no CR metric. CR has a 0.70 pass threshold and LC has a
+0.80 threshold. Values are rounded from DeepEval's recorded scores.
+
+| Case | Observed archive context? | CR | LC | Failed metrics |
+|---|---|---:|---:|---|
+| `eval-en-hist` | yes | 0.27 | 1.00 | CR |
+| `eval-en-current` | no | — | 1.00 | none |
+| `eval-en-mixed` | yes | 0.60 | 1.00 | CR |
+| `eval-fr-hist` | yes | 0.73 | 1.00 | none |
+| `eval-fr-mixed` | yes | 0.22 | 1.00 | CR |
+| `eval-ht-hist` | yes | 0.50 | 0.50 | CR, LC |
+| `eval-ht-mixed` | yes | 0.71 | 0.90 | none |
+| `eval-ht-yesno-founding` | yes | 0.55 | 0.80 | CR |
+| `eval-ht-causal-codeswitch` | **yes; expected web only** | 0.48 | 0.60 | CR, LC |
+| `eval-ht-openended-duvalier` | yes | 0.57 | 1.00 | CR |
+| `eval-ht-slang-compare` | yes | **0.00** | 1.00 | Answer Relevancy, CR |
+| `eval-ht-definitional` | yes | 0.54 | 1.00 | CR |
+| `eval-ht-informal-elections` | no | — | 1.00 | none |
+| `eval-ht-massacre1937` | yes | 1.00 | 1.00 | none |
+| `eval-ht-comparative-duvalier-today` | yes | 0.67 | 0.60 | CR, LC |
+| `eval-ht-slang-current` | **yes; expected web only** | 0.81 | 0.50 | LC |
+| `eval-ht-earthquake-fact` | no | — | 1.00 | none |
+
+The worst archive cases show different failure modes. The before/after-2010
+question got no relevant archive passages (CR 0.00) and its answer wandered to
+1915-1960s history (Answer Relevancy 0.47). Port-au-Prince's economic role
+today got ads, broadcast scheduling and a postal address (CR 0.22). The 1940s
+agriculture question got the 1937 massacre, Yugoslavia, UNESCO, OCR noise and
+only a few agricultural statements (CR 0.27). The Duvalier case got relevant
+material mixed with Trujillo, Manigat and an unrelated legal decision (CR 0.57).
+
+The four LC failures were mainly substantial untranslated French/English
+quotations inside otherwise Haitian Creole answers, not wholesale answers in
+the wrong language. The 1920s-versus-1940s coffee conversation was the sole
+Conversation Completeness failure (0.50): the answer lacked Haitian 1940s
+production evidence, substituted world/Brazil figures, and made an internally
+inconsistent claim of improvement.
+
+### Metric interpretation and baseline limits
+
+- **Retention is unassessable here, not demonstrated to fail seven times.** The
+  saved DeepEval `verboseLogs` show `Verdicts: []` and empty/null extracted
+  knowledge for every conversation, including the explicit Cap-Haïtien research
+  focus. Installed DeepEval 3.8.6 returns 0 when there are no verdicts.
+- **Web-only Faithfulness is vacuous.** `retrieval_context=[]` by design, and
+  DeepEval returns 1 when it has no faithfulness verdicts. Thus 3/3 web-only
+  Faithfulness passes do not verify the web answers. For mixed runs, the metric
+  sees archive chunks but not the web snippets, so it cannot validate web claims.
+- **Tool Correctness measures too little as configured.** The default check
+  accepted two unexpected archive calls on web-only questions; one visible
+  archive-only Duvalier answer used both sources. Its explanations say no
+  `available_tools` were supplied to judge selection. Use exact-set checking
+  to count unnecessary calls, not just required calls.
+- **Mixed-query CR can penalize a useful historical subquery.** The current CR
+  case input is the full user question, while the archive was routed with a
+  narrower subquery. For example, the Duvalier-versus-today case was penalized
+  because archive chunks describe Duvalier but not today's politics, which the
+  web branch is intended to cover. Evaluate archive relevance to its routed
+  subquery as a separate component metric, while retaining whole-answer tests.
+- Source Attribution passed at its 0.60 threshold, but the visible Duvalier
+  case scored exactly 0.60 for partial archive dates and possibly dubious
+  claims. Attribution is not factual correctness. One web-only earthquake answer
+  cited Brainly, and a current-elections answer presented an August 2026 first
+  round as forthcoming even though this run was in October 2026. These warrant
+  source-quality and freshness checks, independent of citation presence.
+- **Do not compare this numerically with Round 24 or 26.** The trace is now
+  authoritative, the judge changed, and the archive-backed cohort is 14 cases
+  rather than Round 24's 15. This is the new baseline, not evidence of a
+  like-for-like regression.
+
+### Highest-leverage next experiments (not implemented in this round)
+
+1. **Fix what the score means before optimizing it.** Use exact routing checks;
+   report retention as N/A when no knowledge/verdicts are extracted (or replace
+   it with explicit fact-retention scenarios); do not apply archive
+   Faithfulness to web-only answers. Score archive CR against each routed
+   archive subquery and separately check that subquery's alignment with the
+   original user need and whole-answer relevance. Review the expected tool
+   labels for post-2002 comparisons before enforcing exact matching; the 2010
+   comparison gold may itself over-require the archive. Tradeoff: a second
+   baseline break and extra eval code, but less incentive to optimize
+   misleading numbers. A new web-grounding/factuality check would add judge
+   cost and should use actual fetched source content, not only search snippets.
+2. **Repair obvious coverage routing in code, with tests.** Current-only
+   questions with no historical intent should not search a corpus ending in
+   2002. A comparison around 2010 should not assume pre-2002 archive articles
+   describe the immediately preceding years; web may need to cover both sides.
+   Keep explicit pre-2002 historical comparisons eligible for archive. Tradeoff:
+   overly broad guards can discard useful historical context, so test against
+   the existing multilingual and mixed-era routing cases. Avoid further
+   `_CLASSIFY_PROMPT` expansion: Round 26 showed it broke other instructions.
+3. **Diagnose candidate generation versus final selection on a small labeled
+   set.** For the worst cases, inspect the Pinecone top-14 *before* quality
+   filtering and the Cohere scores *after* reranking. If relevant chunks are
+   absent, test targeted subqueries, larger candidate pools, or lexical/hybrid
+   retrieval; if present but demoted, test reranker version, threshold and
+   deduplication. If the archive has no answer, prefer web or an explicit
+   coverage caveat. Tradeoffs: extra Pinecone/Cohere cost and latency, and
+   stricter selection can suppress useful but indirect historical evidence.
+   Avoid a hard publication-date filter for historical questions: later
+   retrospective sources can describe earlier events.
+   Do not blindly increase `top_k` or reinvest in the OCR quality classifier;
+   Round 25 found its recall near a practical ambiguity ceiling.
+4. **Improve answer presentation and source trust after retrieval.** Add a
+   concise synthesis-only instruction to translate substantial source quotes
+   into the user's language while preserving the original citation. For
+   current claims, require a publication/as-of date and prefer authoritative
+   sources over answer forums. Do not invent full archive dates when metadata
+   supplies only a year; measure metadata completeness separately. Tradeoffs:
+   quote translation risks nuance loss; source fetching/freshness checks add
+   latency and may reduce coverage; prompt changes require a paired rerun to
+   rule out regressions.
+
+Measure candidate fixes first on the worst cases, then rerun the frozen suite
+with the same judge/settings. Keep the metric-repair baseline separate from
+product-quality gains. No production behavior or eval metric was changed in
+Round 28; only this record was added.
+
+---
+
+## Round 29 — Repair Misleading Measurements (2026-10-17)
+
+This round changes the **evaluation harness only**; there is no new live score
+and no production routing, retrieval, or synthesis change. Round 28 remains the
+last observed product-quality baseline, but its aggregate pass rates cannot be
+compared directly with the next run because the metric definitions and two
+expected-source labels changed.
+
+- **Archive Contextual Relevancy is now a component evaluation.** Each selected
+  archive `SourceRun` gets its own DeepEval case: `input` is the exact routed
+  archive subquery and `retrieval_context` is that run's ordered, final archive
+  evidence. Answer Relevancy and the other answer-level metrics still use the
+  original user question and the original pipeline answer. Both cases are
+  constructed from one `PipelineResult`; no second query execution or evidence
+  reconstruction occurs. This removes the unfair requirement that archive
+  chunks alone answer the contemporary half of a mixed question. It also means
+  a badly scoped routed subquery could score well on retrieval relevance, so
+  answer relevance and exact source selection remain separate checks. A future
+  subquery-to-user-intent check would strengthen that guard further.
+- **No archive evidence means no archive Faithfulness score.** Answers with an
+  empty archive `retrieval_context` are evaluated on answer relevance, source
+  selection, attribution, and language, but not Faithfulness. This prevents
+  DeepEval's empty-verdict default of 1.0 from appearing as proof of grounding.
+  Archive-backed answers still receive Faithfulness, with the existing caveat
+  that mixed answers' web claims are not validated by archive-only context.
+  Archive searches that return no evidence still get a retrieval-relevance
+  case; they are not silently counted as successful retrieval.
+- **Source selection is now exact and order-independent.** A deterministic
+  `Exact Source Selection` metric compares the multisets of source names in
+  `tools_called` and `expected_tools`. Missing, extra, or repeated calls fail;
+  reversing otherwise identical source order passes. DeepEval's built-in
+  `should_exact_match=True` compares list order, which would make legitimate
+  classifier order changes look like route errors. The
+  original `tools_called` sequence is preserved from the execution trace.
+- **Two expected-source labels were corrected before stricter scoring.** The
+  present-day Port-au-Prince economy question and the now-versus-immediately-
+  before-2010 comparison now expect `web_search` only. The archive ends in 2002
+  and cannot document the current economy or the near-2010 baseline. Their
+  historical case IDs remain stable for cross-reference, but old expected-tool
+  outcomes are not comparable to new ones.
+- **Knowledge Retention is reported N/A, not 0/7.** The installed DeepEval
+  metric produced `Verdicts: []` for all seven prior research conversations,
+  including the Cap-Haïtien fact scenario. It was removed from the required
+  conversation metric list; Conversation Completeness and Referential
+  Coherence remain. A future dedicated personal-fact/intake scenario could
+  reintroduce retention once it demonstrably yields assessable verdicts.
+
+The offline tests cover one execution producing both answer and per-source
+retrieval cases, stable evidence ordering, empty archive evidence, exact source
+selection with reversed/missing/extra/duplicate calls, metric grouping, and
+the revised gold labels. The required CI still does not run paid DeepEval.
+An isolated, credential-free DeepEval `evaluate()` smoke test also accepted the
+new exact-source metric and passed a reversed-order source pair.
+No raw execution trace is persisted by this change; live DeepEval retains its
+existing local cache behavior.

@@ -44,6 +44,10 @@ Run the deterministic, network-disabled test suite with `pytest`. It requires no
 API credentials. Run `python eval.py` only when explicitly performing the paid
 provider-backed DeepEval suite; it requires Anthropic, Cohere, and Pinecone
 credentials and is intentionally excluded from required CI.
+The live suite scores archive retrieval against each routed archive subquery,
+does not assign archive-faithfulness scores to answers with no archive evidence,
+and reports Knowledge Retention as not assessed for its current research
+conversations. See [EVAL_LOG.md](EVAL_LOG.md) for the baseline discontinuity.
 
 The pipeline environment also requires the external tools used by the selected
 phase, such as ffmpeg for Whisper and Tesseract/Poppler for OCR. The French NER

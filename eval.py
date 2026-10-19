@@ -6,10 +6,10 @@ Metrics
 RAG quality
   - AnswerRelevancyMetric       : Is the final response on-topic?
   - FaithfulnessMetric          : Is the answer grounded in retrieved archive chunks?
-  - ContextualRelevancyMetric   : Are the Pinecone chunks relevant to the query?
+  - ContextualRelevancyMetric   : Are archive chunks relevant to the routed archive subquery?
 
 Agentic routing
-  - ToolCorrectnessMetric       : Did classify_query route to the right source(s)?
+  - Exact Source Selection      : Were exactly the expected sources selected?
 
 Custom (G-Eval)
   - Source Attribution          : Does the response cite Le Nouvelliste dates / URLs?
@@ -17,18 +17,23 @@ Custom (G-Eval)
                                   (handles EN / FR / HT Creole)
 
 Multi-turn conversation
-  - KnowledgeRetentionMetric    : Does Pearl remember facts established in earlier turns?
   - ConversationCompletenessMetric: Does Pearl fully address the user's evolving questions?
   - ConversationalGEval         : Does Pearl correctly resolve pronouns and vague
     (Referential Coherence)       references ("that", "li", "ça") to prior content?
 
+Knowledge Retention is not scored for these research conversations: DeepEval
+extracted no knowledge and produced no verdicts in the first live baseline, so
+its 0.0 scores were unassessable rather than evidence of forgetting.
+
 Judge model
-  Claude Sonnet 4.5 via Anthropic API
+  Claude Sonnet 5.5 via Anthropic API
 """
 
 import logging
 import os
+from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Optional, Type
 
 from langchain_anthropic import ChatAnthropic
@@ -37,13 +42,12 @@ from pydantic import BaseModel
 from deepeval import evaluate
 from deepeval.metrics import (
     AnswerRelevancyMetric,
+    BaseMetric,
     ContextualRelevancyMetric,
     ConversationCompletenessMetric,
     ConversationalGEval,
     FaithfulnessMetric,
     GEval,
-    KnowledgeRetentionMetric,
-    ToolCorrectnessMetric,
 )
 from deepeval.models import DeepEvalBaseLLM
 from deepeval.test_case import (
@@ -78,40 +82,83 @@ def _require_live_credentials() -> None:
         )
 
 
-# ── Judge model: Claude Sonnet 4.5 via Anthropic API ─────────────────────────
+# ── Judge model: Claude Sonnet 5.5 via Anthropic API ─────────────────────────
 
 class AnthropicClaudeJudge(DeepEvalBaseLLM):
-    """DeepEval-compatible judge backed by Claude Sonnet 4.5 via Anthropic API."""
+    """DeepEval-compatible judge backed by Claude Sonnet 5.5 via Anthropic API."""
 
     def __init__(
         self,
-        model_id: str = "claude-sonnet-4-5-20250929",
+        model_id: str = "claude-sonnet-5-5",
     ):
         self._model_id = model_id
         self._chat = ChatAnthropic(model=model_id)
-        # self._chat = ChatBedrockConverse(model="us.anthropic.claude-sonnet-4-5-20250929-v1:0")
 
     def load_model(self):
         return self._chat
 
+    # Sonnet 5.5 rejects LangChain's default forced-tool output mode.
     def generate(self, prompt: str, *args, schema: Optional[Type[BaseModel]] = None, **kwargs) -> Any:
         if schema is not None:
-            return self._chat.with_structured_output(schema).invoke(prompt)
+            return self._chat.with_structured_output(schema, method="json_schema").invoke(prompt)
         return self._chat.invoke(prompt).content
 
     async def a_generate(self, prompt: str, *args, schema: Optional[Type[BaseModel]] = None, **kwargs) -> Any:
         if schema is not None:
-            return await self._chat.with_structured_output(schema).ainvoke(prompt)
+            return await self._chat.with_structured_output(schema, method="json_schema").ainvoke(prompt)
         return (await self._chat.ainvoke(prompt)).content
 
     def get_model_name(self) -> str:
-        return f"Claude Sonnet 4.5 (Anthropic API / {self._model_id})"
-
-
+        return f"Claude Sonnet 5.5 (Anthropic API / {self._model_id})"
 
 
 # ── Retrieval helpers ─────────────────────────────────────────────────────────
 
+
+class ExactSourceSelectionMetric(BaseMetric):
+    """Compare selected sources without treating their execution order as a failure."""
+
+    _required_params = [
+        LLMTestCaseParams.TOOLS_CALLED,
+        LLMTestCaseParams.EXPECTED_TOOLS,
+    ]
+
+    def __init__(self) -> None:
+        self.threshold = 1.0
+        self.async_mode = True
+        self.include_reason = True
+        self.score = None
+        self.success = None
+        self.reason = None
+
+    def measure(self, test_case: LLMTestCase, *args, **kwargs) -> float:
+        called = Counter(tool.name for tool in test_case.tools_called or [])
+        expected = Counter(tool.name for tool in test_case.expected_tools or [])
+        self.score = float(called == expected)
+        self.success = self.score == 1.0
+        self.reason = (
+            f"Expected {sorted(expected.elements())}; "
+            f"called {sorted(called.elements())}."
+        )
+        return self.score
+
+    async def a_measure(self, test_case: LLMTestCase, *args, **kwargs) -> float:
+        return self.measure(test_case, *args, **kwargs)
+
+    def is_successful(self) -> bool:
+        return bool(self.success)
+
+    @property
+    def __name__(self) -> str:
+        return "Exact Source Selection"
+
+
+@dataclass(frozen=True)
+class SingleTurnCases:
+    """One answer case and per-archive-source retrieval cases from one run."""
+
+    answer: LLMTestCase
+    archive_relevance: tuple[LLMTestCase, ...]
 
 
 def trace_to_tools_called(trace: ExecutionTrace) -> list[ToolCall]:
@@ -134,24 +181,51 @@ def build_test_case(
     runner: Callable[[str, list[dict]], PipelineResult] | None = None,
 ) -> LLMTestCase:
     """Execute `query` once and build a test case from its real trace."""
+    return build_single_turn_cases(
+        query, expected_sources, thread_id, runner=runner
+    ).answer
+
+
+def build_single_turn_cases(
+    query: str,
+    expected_sources: list[str],
+    thread_id: str,
+    *,
+    runner: Callable[[str, list[dict]], PipelineResult] | None = None,
+) -> SingleTurnCases:
+    """Build answer and retrieval evaluations without rerunning the pipeline."""
     logger.info("[%s] Running query and capturing trace…", thread_id)
     result = (runner or run_query)(query, [])
     trace_data = evaluation_trace_data(result.trace)
     tools_called = trace_to_tools_called(result.trace)
     retrieval_context = list(trace_data.retrieval_context)
 
-    return LLMTestCase(
+    answer_case = LLMTestCase(
         input=query,
         actual_output=result.answer,
-        # Kept as [] rather than collapsed to None for web-only queries:
-        # FaithfulnessMetric/ContextualRelevancyMetric require non-None
-        # retrieval_context, and [] correctly signals "no archive queried"
-        # (see Round 9) rather than "archive queried, nothing relevant found".
+        # [] faithfully represents no archive evidence. Web-only cases are
+        # not scored with archive Faithfulness or Contextual Relevancy.
         retrieval_context=retrieval_context,
         tools_called=tools_called,
         expected_tools=[ToolCall(name=s) for s in expected_sources],
         name=thread_id,
     )
+
+    archive_relevance = tuple(
+        LLMTestCase(
+            input=source_run.query,
+            actual_output=result.answer,
+            retrieval_context=[
+                evidence.text
+                for evidence in source_run.evidence
+                if evidence.source == "pinecone_search" and evidence.text
+            ],
+            name=f"{thread_id}:archive:{index}",
+        )
+        for index, source_run in enumerate(result.trace.source_runs, start=1)
+        if source_run.source == "pinecone_search"
+    )
+    return SingleTurnCases(answer_case, archive_relevance)
 
 
 # ── Test queries ──────────────────────────────────────────────────────────────
@@ -186,10 +260,10 @@ TEST_QUERIES: list[tuple[str, list[str], str]] = [
         ["pinecone_search"],
         "eval-fr-hist",
     ),
-    # French — mixed
+    # French — present-day economy; the archive ends in 2002.
     (
         "Quel rôle joue Port-au-Prince dans l'économie haïtienne aujourd'hui ?",
-        ["pinecone_search", "web_search"],
+        ["web_search"],
         "eval-fr-mixed",
     ),
     # Haitian Creole — historical
@@ -234,11 +308,11 @@ TEST_QUERIES: list[tuple[str, list[str], str]] = [
         ["pinecone_search"],
         "eval-ht-openended-duvalier",
     ),
-    # Comparative — informal/slang register, spans historical + current
+    # Comparative — the immediate pre-2010 baseline is outside archive coverage.
     (
         "Kouman lavi a ap ye kounye a Ayiti konpare ak anvan tranblemanntè "
         "2010 la, tu wè?",
-        ["pinecone_search", "web_search"],
+        ["web_search"],
         "eval-ht-slang-compare",
     ),
     # Definitional — cultural/historical topic, standard register
@@ -295,9 +369,7 @@ def build_single_turn_metrics(judge: DeepEvalBaseLLM):
     contextual_relevancy = ContextualRelevancyMetric(
         threshold=0.7, model=judge, include_reason=True
     )
-    tool_correctness = ToolCorrectnessMetric(
-        threshold=0.5, model=judge, include_reason=True
-    )
+    exact_source_selection = ExactSourceSelectionMetric()
     source_attribution = GEval(
         name="Source Attribution",
         criteria=(
@@ -342,16 +414,15 @@ def build_single_turn_metrics(judge: DeepEvalBaseLLM):
         model=judge,
         threshold=0.8,
     )
-    metrics = [
+    answer_metrics = [
         answer_relevancy,
         faithfulness,
-        contextual_relevancy,
-        tool_correctness,
+        exact_source_selection,
         source_attribution,
         language_consistency,
     ]
-    web_only_metrics = [m for m in metrics if m is not contextual_relevancy]
-    return metrics, web_only_metrics
+    no_archive_metrics = [m for m in answer_metrics if m is not faithfulness]
+    return answer_metrics, no_archive_metrics, [contextual_relevancy]
 
 
 # ── Multi-turn helpers ────────────────────────────────────────────────────────
@@ -536,10 +607,7 @@ CONVO_SCENARIOS: list[tuple[list[str], str, str, str]] = [
 # ── Multi-turn metrics ────────────────────────────────────────────────────────
 
 def build_conversation_metrics(judge: DeepEvalBaseLLM):
-    """Create live conversation metrics only for an explicit evaluation run."""
-    knowledge_retention = KnowledgeRetentionMetric(
-        threshold=0.7, model=judge, include_reason=True
-    )
+    """Score conversation quality without the unassessable retention metric."""
     conversation_completeness = ConversationCompletenessMetric(
         threshold=0.7, model=judge, include_reason=True
     )
@@ -561,7 +629,7 @@ def build_conversation_metrics(judge: DeepEvalBaseLLM):
         model=judge,
         threshold=0.7,
     )
-    return [knowledge_retention, conversation_completeness, referential_coherence]
+    return [conversation_completeness, referential_coherence]
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -569,37 +637,55 @@ def build_conversation_metrics(judge: DeepEvalBaseLLM):
 def main():
     _require_live_credentials()
     judge = AnthropicClaudeJudge()
-    metrics, web_only_metrics = build_single_turn_metrics(judge)
+    answer_metrics, no_archive_metrics, archive_relevance_metrics = (
+        build_single_turn_metrics(judge)
+    )
     convo_metrics = build_conversation_metrics(judge)
     print(f"\nPearl — DeepEval evaluation suite")
     print(f"Judge  : {judge.get_model_name()}")
     print(f"Cases  : {len(TEST_QUERIES)} single-turn + {len(CONVO_SCENARIOS)} multi-turn")
-    print(f"Metrics: {[m.__class__.__name__ for m in metrics]}")
+    print(f"Answer metrics: {[m.__name__ for m in answer_metrics]}")
+    print(
+        "Archive retrieval metrics: "
+        f"{[m.__name__ for m in archive_relevance_metrics]}"
+    )
     print(f"Convo metrics: {[m.__class__.__name__ for m in convo_metrics]}\n")
+    print(
+        "Knowledge Retention: N/A — not assessed; the previous run produced "
+        "no knowledge/verdicts for these research scenarios.\n"
+    )
 
     # ── Single-turn evaluation ─────────────────────────────────────────────────
     test_cases: list[LLMTestCase] = []
+    archive_relevance_cases: list[LLMTestCase] = []
     for query, expected_sources, thread_id in TEST_QUERIES:
         print(f"Building [{thread_id}]: {query[:70]}…")
-        tc = build_test_case(query, expected_sources, thread_id)
-        test_cases.append(tc)
+        cases = build_single_turn_cases(query, expected_sources, thread_id)
+        test_cases.append(cases.answer)
+        archive_relevance_cases.extend(cases.archive_relevance)
 
-    # Split by whether pinecone_search was actually called, so Contextual
-    # Relevancy is only applied where there's archive context to judge.
+    # Faithfulness needs actual archive evidence; do not score an empty context
+    # as a perfect grounded answer. Contextual Relevancy is scored separately
+    # against the routed archive subquery, one case per archive search.
     archive_cases: list[LLMTestCase] = []
-    web_only_cases: list[LLMTestCase] = []
+    no_archive_cases: list[LLMTestCase] = []
     for tc in test_cases:
-        if any(t.name == "pinecone_search" for t in tc.tools_called):
+        if tc.retrieval_context:
             archive_cases.append(tc)
         else:
-            web_only_cases.append(tc)
+            no_archive_cases.append(tc)
 
-    print(f"\nRunning single-turn evaluation ({len(archive_cases)} archive-backed cases)…\n")
-    evaluate(archive_cases, metrics)
+    if archive_cases:
+        print(f"\nRunning answer evaluation ({len(archive_cases)} archive-backed cases)…\n")
+        evaluate(archive_cases, answer_metrics)
 
-    if web_only_cases:
-        print(f"\nRunning single-turn evaluation ({len(web_only_cases)} web-only cases, no Contextual Relevancy)…\n")
-        evaluate(web_only_cases, web_only_metrics)
+    if no_archive_cases:
+        print(f"\nRunning answer evaluation ({len(no_archive_cases)} cases without archive evidence)…\n")
+        evaluate(no_archive_cases, no_archive_metrics)
+
+    if archive_relevance_cases:
+        print(f"\nRunning archive retrieval evaluation ({len(archive_relevance_cases)} routed searches)…\n")
+        evaluate(archive_relevance_cases, archive_relevance_metrics)
 
     # ── Multi-turn evaluation ──────────────────────────────────────────────────
     convo_cases: list[ConversationalTestCase] = []
@@ -614,8 +700,9 @@ def main():
         )
         convo_cases.append(cc)
 
-    print(f"\nRunning multi-turn evaluation ({len(convo_cases)} conversations)…\n")
-    evaluate(convo_cases, convo_metrics)
+    if convo_cases:
+        print(f"\nRunning multi-turn evaluation ({len(convo_cases)} conversations)…\n")
+        evaluate(convo_cases, convo_metrics)
 
 
 if __name__ == "__main__":
