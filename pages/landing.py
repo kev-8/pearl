@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, Input, Output, State, callback, ctx
+from dash import html, Input, Output, State, callback, ctx
 
 dash.register_page(__name__, path='/', title='pearl')
 
@@ -24,7 +24,6 @@ SWITCHER_OPTIONS = {
 layout = html.Div(
     className='page-center landing-page',
     children=[
-        dcc.Store(id='landing-lang', data='en'),
         html.Div(html.H1('pearl', className='pearl-text'), className='pearl-text-wrapper'),
         html.P(
             DESCRIPTIONS['en'],
@@ -60,23 +59,35 @@ layout = html.Div(
 
 
 @callback(
-    Output('landing-lang', 'data'),
-    Output('landing-description', 'children'),
-    Output('landing-enter', 'children'),
-    Output('lang-btn-1', 'children'),
-    Output('lang-btn-2', 'children'),
+    Output('answer-language', 'data'),
     Input('lang-btn-1', 'n_clicks'),
     Input('lang-btn-2', 'n_clicks'),
-    State('landing-lang', 'data'),
     State('lang-btn-1', 'children'),
     State('lang-btn-2', 'children'),
     prevent_initial_call=True,
 )
-def switch_lang(_, __, current_lang, btn1_label, btn2_label):
-    triggered = ctx.triggered_id
-    new_lang = btn1_label.lower() if triggered == 'lang-btn-1' else btn2_label.lower()
-    btn1_new, btn2_new = SWITCHER_OPTIONS[new_lang]
-    return new_lang, DESCRIPTIONS[new_lang], ENTER_TEXT[new_lang], btn1_new, btn2_new
+def switch_lang(_, __, btn1_label, btn2_label):
+    if ctx.triggered_id == 'lang-btn-1':
+        selected = btn1_label.lower()
+    elif ctx.triggered_id == 'lang-btn-2':
+        selected = btn2_label.lower()
+    else:
+        return dash.no_update
+    # English is the default landing view; returning to it clears the override.
+    return None if selected == 'en' else selected
+
+
+@callback(
+    Output('landing-description', 'children'),
+    Output('landing-enter', 'children'),
+    Output('lang-btn-1', 'children'),
+    Output('lang-btn-2', 'children'),
+    Input('answer-language', 'data'),
+)
+def render_language_choice(selected_language):
+    display_language = selected_language if selected_language in DESCRIPTIONS else 'en'
+    btn1, btn2 = SWITCHER_OPTIONS[display_language]
+    return DESCRIPTIONS[display_language], ENTER_TEXT[display_language], btn1, btn2
 
 
 @callback(

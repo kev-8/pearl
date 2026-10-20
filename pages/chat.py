@@ -1,6 +1,7 @@
 import dash
 from dash import html, dcc, Input, Output, State, callback, clientside_callback, no_update
 
+from language import previous_user_language, resolve_answer_language
 from modeling import start_stream, get_stream_state
 
 dash.register_page(__name__, path='/chat', title='pearl')
@@ -53,23 +54,6 @@ PLACEHOLDERS = {
     'en': 'Ask a follow-up…',
 }
 
-# Common Haitian Creole words that distinguish it from French
-_CREOLE_MARKERS = {'ki', 'nan', 'pou', 'mwen', 'ou', 'sa', 'yon', 'ak', 'pa', 'li',
-                   'te', 'yo', 'lè', 'gen', 'fè', 'kisa', 'kouman', 'kote', 'poukisa',
-                   'èske', 'anpil', 'tout', 'sou'}
-
-
-def detect_language(text):
-    """Simple heuristic to detect Haitian Creole vs French vs English."""
-    words = set(text.lower().split())
-    if words & _CREOLE_MARKERS:
-        return 'ht'
-    # French accent markers and common words
-    if any(c in text for c in 'àâçéèêëîïôùûü') or words & {'les', 'des', 'une', 'est', 'dans', 'sur', 'avec', 'pour', 'qui', 'que', 'cette', 'sont'}:
-        return 'fr'
-    return 'en'
-
-
 def render_messages(history):
     """Convert list of {role, content} dicts to Dash bubble components."""
     bubbles = []
@@ -109,15 +93,22 @@ def _thinking_state(history, query):
 @callback(
     Output('chat-messages', 'children'),
     Output('pending-query', 'data'),
+    Output('chat-input', 'placeholder'),
     Input('init-trigger', 'n_intervals'),
     State('initial-query', 'data'),
     State('conversation-history', 'data'),
+    State('answer-language', 'data'),
     prevent_initial_call=True,
 )
-def initial_show(n_intervals, initial_query, history):
+def initial_show(n_intervals, initial_query, history, answer_language):
+    lang = resolve_answer_language(
+        initial_query or '', answer_language,
+        fallback=previous_user_language(history or []),
+    )
+    placeholder = PLACEHOLDERS[lang]
     if history or not initial_query:
-        return render_messages(history or []), no_update
-    return _thinking_state([], initial_query), initial_query
+        return render_messages(history or []), no_update, placeholder
+    return _thinking_state([], initial_query), initial_query, placeholder
 
 
 # ── Callback 2: show thinking state immediately on follow-up submit ───────────
@@ -126,17 +117,20 @@ def initial_show(n_intervals, initial_query, history):
     Output('chat-messages', 'children', allow_duplicate=True),
     Output('chat-input', 'value'),
     Output('pending-query', 'data', allow_duplicate=True),
-    Output('chat-input', 'placeholder'),
+    Output('chat-input', 'placeholder', allow_duplicate=True),
     Input('chat-input', 'n_submit'),
     State('chat-input', 'value'),
     State('conversation-history', 'data'),
+    State('answer-language', 'data'),
     prevent_initial_call=True,
 )
-def submit_show(n_submit, value, history):
+def submit_show(n_submit, value, history, answer_language):
     if not value or not value.strip():
         return no_update, no_update, no_update, no_update
     query = value.strip()
-    lang = detect_language(query)
+    lang = resolve_answer_language(
+        query, answer_language, fallback=previous_user_language(history or [])
+    )
     placeholder = PLACEHOLDERS.get(lang, PLACEHOLDERS['en'])
     return _thinking_state(history or [], query), '', query, placeholder
 
@@ -148,12 +142,14 @@ def submit_show(n_submit, value, history):
     Input('pending-query', 'data'),
     State('thread-id', 'data'),
     State('conversation-history', 'data'),
+    State('answer-language', 'data'),
     prevent_initial_call=True,
 )
-def start_query_stream(pending_query, thread_id, history):
+def start_query_stream(pending_query, thread_id, history, answer_language):
     if not pending_query:
         return True  # nothing to do — keep interval disabled
-    start_stream(pending_query, history or [], thread_id or 'default')
+    start_stream(pending_query, history or [], thread_id or 'default',
+                 answer_language=answer_language)
     return False  # enable polling
 
 

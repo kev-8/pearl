@@ -12,7 +12,14 @@ Pearl is an AI research assistant created to celebrate Haiti's rich history, vib
 - Supplements archive results with live web search for contemporary context
 - Synthesizes findings into cited, well-structured responses
 - Supports multi-turn conversations with full context retention
-- Responds in the language of the question (English, French, Haitian Creole)
+- Responds in the language of the question by default, with an optional Haitian Creole or French preference
+
+The landing page starts in English with its original HT/FR switcher. Selecting
+HT or FR keeps that answer language for the browser session; returning to EN
+clears the override. Without an override, Pearl detects each question's
+language, uses the previous user question for ambiguous follow-ups, and falls
+back to English. Archive search can still use a French subquery for a Creole
+question without changing the answer language.
 
 ## Stack
 

@@ -63,8 +63,8 @@ class FakeServices:
         )
         return SourceRun(decision.source, decision.query, decision.source, evidence)
 
-    def stream_synthesis(self, query, history_text, source_runs):
-        self.synthesis_calls.append((query, history_text, source_runs))
+    def stream_synthesis(self, query, history_text, source_runs, answer_language):
+        self.synthesis_calls.append((query, history_text, source_runs, answer_language))
         yield "first"
         yield ""
         yield " second"
@@ -86,7 +86,18 @@ def test_run_query_captures_one_authoritative_ordered_trace():
         "web_search",
     ]
     assert services.synthesis_calls[0][2] == result.trace.source_runs
+    assert services.synthesis_calls[0][3] == "en"
     assert archive_retrieval_context(result.trace) == ["archive evidence"]
+
+
+def test_answer_language_auto_detection_and_explicit_override():
+    services = FakeServices(decisions=(RoutingDecision("web_search", "q"),))
+
+    run_query("Kisa k ap pase an Ayiti?", [], services=services)
+    run_query("What happened in Haiti?", [], services=services,
+              answer_language="ht")
+
+    assert [call[3] for call in services.synthesis_calls] == ["ht", "ht"]
 
 
 def test_empty_route_returns_existing_fallback_and_streams_it():
@@ -187,7 +198,7 @@ def test_failures_are_stage_specific(stage, source):
                 raise ValueError("broken")
             return SourceRun("pinecone_search", query, "result")
 
-        def stream_synthesis(self, query, history_text, source_runs):
+        def stream_synthesis(self, query, history_text, source_runs, answer_language):
             if stage == "synthesis":
                 raise ValueError("broken")
             yield "answer"

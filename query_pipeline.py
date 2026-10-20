@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
+from language import LanguageCode, previous_user_language, resolve_answer_language
+
 
 SourceName = Literal["pinecone_search", "web_search"]
 
@@ -89,6 +91,7 @@ class PipelineServices(Protocol):
         query: str,
         history_text: str,
         source_runs: Sequence[SourceRun],
+        answer_language: LanguageCode,
     ) -> Iterable[str]: ...
 
 
@@ -121,9 +124,13 @@ def run_query(
     *,
     services: PipelineServices,
     on_token: Callable[[str], None] | None = None,
+    answer_language: LanguageCode | None = None,
 ) -> PipelineResult:
     """Execute one query once and return its answer and authoritative trace."""
     history_text = format_history(history)
+    target_language = resolve_answer_language(
+        query, answer_language, fallback=previous_user_language(history)
+    )
 
     try:
         decisions = tuple(services.classify(query, history_text))
@@ -172,7 +179,9 @@ def run_query(
 
     chunks: list[str] = []
     try:
-        for token in services.stream_synthesis(query, history_text, source_runs):
+        for token in services.stream_synthesis(
+            query, history_text, source_runs, target_language
+        ):
             if not token:
                 continue
             if not isinstance(token, str):

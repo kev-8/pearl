@@ -37,6 +37,8 @@ app.index_string = '''
 app.layout = html.Div([
     dcc.Store(id='initial-query', storage_type='session'),
     dcc.Store(id='thread-id', storage_type='session'),
+    # None means detect each question; a landing-page choice overrides detection.
+    dcc.Store(id='answer-language', storage_type='session'),
     dash.page_container,
 ])
 

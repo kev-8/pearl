@@ -144,7 +144,8 @@ def test_web_failure_continues_synthesis_without_fabricated_evidence(monkeypatch
     )
     received = []
 
-    def synthesize(query, history, runs):
+    def synthesize(query, history, runs, answer_language):
+        assert answer_language == "en"
         received.extend(runs)
         yield "Answer with search limitation"
 
@@ -192,20 +193,45 @@ def test_production_synthesis_uses_ordered_source_text(monkeypatch):
     )
     tokens = list(
         modeling.ProductionPipelineServices().stream_synthesis(
-            "question", "User: prior", runs
+            "question", "User: prior", runs, "ht"
         )
     )
     assert tokens == ["one", "two"]
     assert "archive result" in captured["messages"][1]["content"]
     assert captured["messages"][1]["content"].index("archive result") < captured["messages"][1]["content"].index("web result")
     assert "User: prior" in captured["messages"][0]["content"]
+    assert "Answer language: Haitian Creole" in captured["messages"][0]["content"]
+    assert "provide a labeled translation" in captured["messages"][0]["content"]
+
+
+def test_production_run_query_passes_explicit_answer_language_to_synthesis(monkeypatch):
+    captured = {}
+
+    class FakeModel:
+        def stream(self, messages):
+            captured["system"] = messages[0]["content"]
+            return [SimpleNamespace(content="Repons")]
+
+    services = modeling.ProductionPipelineServices()
+    monkeypatch.setattr(services, "classify", lambda *args:
+                        [RoutingDecision("web_search", "current")])
+    monkeypatch.setattr(services, "search_web", lambda query:
+                        SourceRun("web_search", query, "web evidence"))
+    monkeypatch.setattr(modeling, "_get_synthesis_model", lambda: FakeModel())
+
+    result = modeling.run_query("What happened?", [], services=services,
+                                answer_language="ht")
+
+    assert result.answer == "Repons"
+    assert "Answer language: Haitian Creole" in captured["system"]
 
 
 def test_stream_wrapper_preserves_success_and_safe_error(monkeypatch):
     trace = ExecutionTrace((), ())
     observed_states = []
 
-    def success(query, history, *, on_token, services=None):
+    def success(query, history, *, on_token, services=None, answer_language=None):
+        assert answer_language == "ht"
         on_token("partial ")
         observed_states.append(modeling.get_stream_state("success"))
         on_token("answer")
@@ -213,7 +239,7 @@ def test_stream_wrapper_preserves_success_and_safe_error(monkeypatch):
 
     monkeypatch.setattr(modeling, "run_query", success)
     modeling._stream_buffers["success"] = {"text": "", "done": False}
-    modeling._stream_query("q", [], "success")
+    modeling._stream_query("q", [], "success", "ht")
     assert observed_states == [("partial ", False)]
     assert modeling.get_stream_state("success") == ("partial answer", True)
 

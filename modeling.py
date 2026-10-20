@@ -14,6 +14,7 @@ from langchain_core.tools import tool
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field
 from embeddings import generate_text_embeddings, normalize_embeddings
+from language import LANGUAGE_NAMES, LanguageCode
 from quality_filter_candidate import score_chunk_quality
 from query_pipeline import (
     EvidenceRecord,
@@ -496,12 +497,22 @@ class ProductionPipelineServices:
         query: str,
         history_text: str,
         source_runs: Sequence[SourceRun],
+        answer_language: LanguageCode,
     ) -> Iterable[str]:
         formatted_results = "\n\n".join(
             f"**From {source_run.source.title()}:**\n{source_run.result_text}"
             for source_run in source_runs
         )
-        system = _SYNTHESIS_PROMPT
+        system = (
+            _SYNTHESIS_PROMPT
+            + f"\n\nAnswer language: {LANGUAGE_NAMES[answer_language]}. Write the answer, "
+            "including headings and explanations, in this language regardless of "
+            "the languages of search queries, source passages, or conversation history. "
+            "Paraphrase source passages in the answer language. If exact original "
+            "wording matters, keep the original quotation brief and provide a labeled "
+            "translation in the answer language. Preserve source names, dates, and URLs "
+            "in citations."
+        )
         if history_text:
             system += (
                 "\n\nConversation context (use for continuity and pronoun resolution):\n"
@@ -523,6 +534,7 @@ def run_query(
     *,
     services: PipelineServices | None = None,
     on_token: Callable[[str], None] | None = None,
+    answer_language: LanguageCode | None = None,
 ) -> PipelineResult:
     """Run the shared production pipeline synchronously."""
     return _run_query_core(
@@ -530,10 +542,16 @@ def run_query(
         history,
         services=services if services is not None else ProductionPipelineServices(),
         on_token=on_token,
+        answer_language=answer_language,
     )
 
 
-def _stream_query(query: str, history: list[dict], buffer_id: str) -> None:
+def _stream_query(
+    query: str,
+    history: list[dict],
+    buffer_id: str,
+    answer_language: LanguageCode | None = None,
+) -> None:
     """
     Run the full pipeline and write streamed chunks to _stream_buffers[buffer_id].
     Intended to be called in a background thread via start_stream().
@@ -542,7 +560,8 @@ def _stream_query(query: str, history: list[dict], buffer_id: str) -> None:
         def append_token(token: str) -> None:
             _stream_buffers[buffer_id]["text"] += token
 
-        run_query(query, history, on_token=append_token)
+        run_query(query, history, on_token=append_token,
+                  answer_language=answer_language)
 
     except Exception as err:
         logger.exception("Streaming error: %s", err)
@@ -551,12 +570,17 @@ def _stream_query(query: str, history: list[dict], buffer_id: str) -> None:
         _stream_buffers[buffer_id]["done"] = True
 
 
-def start_stream(query: str, history: list[dict], buffer_id: str) -> None:
+def start_stream(
+    query: str,
+    history: list[dict],
+    buffer_id: str,
+    answer_language: LanguageCode | None = None,
+) -> None:
     """Initialise the stream buffer and launch _stream_query in a daemon thread."""
     _stream_buffers[buffer_id] = {"text": "", "done": False}
     threading.Thread(
         target=_stream_query,
-        args=(query, history, buffer_id),
+        args=(query, history, buffer_id, answer_language),
         daemon=True,
     ).start()
 
