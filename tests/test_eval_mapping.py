@@ -172,6 +172,43 @@ def test_exact_source_selection_checks_missing_extra_and_duplicate_calls(
     assert "Expected" in metric.reason
 
 
+@pytest.mark.parametrize(
+    ("called", "score"),
+    [
+        (["pinecone_search"], 1.0),
+        (["web_search", "pinecone_search"], 1.0),
+        (["web_search"], 0.0),
+        (["pinecone_search", "web_search", "web_search"], 0.0),
+    ],
+)
+def test_historical_web_supplement_is_optional_but_archive_required(called, score):
+    case = LLMTestCase(
+        input="historical question",
+        actual_output="answer",
+        tools_called=[ToolCall(name=name) for name in called],
+        expected_tools=[ToolCall(name="pinecone_search")],
+        name="eval-ht-definitional",
+    )
+    metric = pearl_eval.ExactSourceSelectionMetric({
+        "eval-ht-definitional": ("web_search",),
+    })
+    assert metric.measure(case) == score
+
+
+def test_optional_web_does_not_apply_to_other_cases():
+    case = LLMTestCase(
+        input="historical question",
+        actual_output="answer",
+        tools_called=[ToolCall(name="pinecone_search"), ToolCall(name="web_search")],
+        expected_tools=[ToolCall(name="pinecone_search")],
+        name="eval-ht-massacre1937",
+    )
+    metric = pearl_eval.ExactSourceSelectionMetric({
+        "eval-ht-definitional": ("web_search",),
+    })
+    assert metric.measure(case) == 0.0
+
+
 def test_metric_groups_skip_unassessable_retention_and_web_only_faithfulness(monkeypatch):
     monkeypatch.setattr(pearl_eval, "ChatAnthropic", lambda model: object())
     judge = pearl_eval.AnthropicClaudeJudge()
@@ -180,7 +217,7 @@ def test_metric_groups_skip_unassessable_retention_and_web_only_faithfulness(mon
     conversation = pearl_eval.build_conversation_metrics(judge)
 
     assert [metric.__name__ for metric in answer] == [
-        "Answer Relevancy", "Faithfulness", "Exact Source Selection",
+        "Answer Relevancy", "Faithfulness", "Source Selection",
         "Source Attribution [GEval]", "Language Consistency [GEval]",
     ]
     assert "Faithfulness" not in [metric.__name__ for metric in no_archive]

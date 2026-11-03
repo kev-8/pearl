@@ -36,6 +36,62 @@ from query_pipeline import ExecutionTrace, PipelineResult, RoutingDecision, Sour
             ["pinecone_search", "web_search"],
         ),
         (
+            "Kouman lavi a ap ye kounye a Ayiti konpare ak anvan tranblemanntè 2010 la, tu wè?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["web_search"],
+        ),
+        (
+            "Quel rôle joue Port-au-Prince dans l'économie haïtienne aujourd'hui ?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["web_search"],
+        ),
+        (
+            "kap pase nan peyi a fr, tout bagay tounen mal?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["web_search"],
+        ),
+        (
+            "Poukisa gang yo pran kontwòl Pòtoprens, e ki impact sa gen sou la population ki rete la?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["web_search"],
+        ),
+        (
+            "Ki sa k ap pase Pòtoprens kounye a epi ki jan li te ye anvan?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["pinecone_search", "web_search"],
+        ),
+        (
+            "How did gangs control Port-au-Prince in 1990?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["pinecone_search", "web_search"],
+        ),
+        (
+            "What is happening in Haiti today compared with the Duvalier era?",
+            [
+                {"source": "pinecone_search", "query": "old"},
+                {"source": "web_search", "query": "new"},
+            ],
+            ["pinecone_search", "web_search"],
+        ),
+        (
             "What happened in 2010?",
             [{"source": "pinecone_search", "query": "old"}],
             ["pinecone_search"],
@@ -45,6 +101,34 @@ from query_pipeline import ExecutionTrace, PipelineResult, RoutingDecision, Sour
 def test_post_archive_routing_guard(query, classifications, expected_sources):
     result = modeling._drop_archive_for_post_archive_years(query, classifications)
     assert [item["source"] for item in result] == expected_sources
+
+
+def test_classifier_prompt_describes_indexed_archive_coverage():
+    assert "to present" not in modeling._CLASSIFY_PROMPT
+    assert "1979" in modeling._CLASSIFY_PROMPT
+    assert "2002" in modeling._CLASSIFY_PROMPT
+
+
+def test_classifier_applies_current_only_guard_after_one_model_call(monkeypatch):
+    calls = []
+
+    class FakeRouter:
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, messages):
+            calls.append(messages)
+            return SimpleNamespace(classifications=[
+                {"source": "pinecone_search", "query": "historical context"},
+                {"source": "web_search", "query": "current situation"},
+            ])
+
+    monkeypatch.setattr(modeling, "_get_router_model", lambda: FakeRouter())
+    result = modeling.classify_query({"query": "What is happening in Haiti today?"})
+    assert len(calls) == 1
+    assert result["classifications"] == [
+        {"source": "web_search", "query": "current situation"},
+    ]
 
 
 def test_search_archive_records_exact_final_matches(monkeypatch):

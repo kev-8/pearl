@@ -331,7 +331,8 @@ class ClassificationResult(BaseModel):
 _CLASSIFY_PROMPT = (
     "You route user questions about Haiti to the right knowledge sources:\n"
     "- `pinecone_search`: historical information from Le Nouvelliste, Haiti's oldest newspaper "
-    "(articles from ~1900 to present). Use for Haitian history, culture, politics, economics, "
+    "(indexed articles from ~1899 to 1979) and Radio Haïti broadcasts (1957 to 2002). "
+    "Use for Haitian history, culture, politics, economics, "
     "social events, named figures, and places documented in the archive.\n"
     "- `web_search`: current events, recent context, or topics unlikely to appear in historical "
     "newspaper archives (e.g., post-2020 events, technical/scientific topics, comparative context).\n"
@@ -387,9 +388,36 @@ _COMPARISON_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Keep this guard deliberately narrow: a present-day question should not get
+# archive evidence merely because the router can invent a historical subquery.
+# Explicit historical/comparative intent still takes precedence.
+_CURRENT_INTENT_RE = re.compile(
+    r"\b(?:current|today|now|these days|aujourd['’]hui|actuellement|maintenant|"
+    r"en ce moment|kounye a|jodi a|k\s*ap pase)\b",
+    re.IGNORECASE,
+)
+_HISTORICAL_INTENT_RE = re.compile(
+    r"\b(?:anvan|avant|before|konpare|compar\w*|compared?|versus|vs|"
+    r"history|histoire|istwa|historical|past|lontan|te ye|used to|"
+    r"since|depi|depuis|changed?|changes|évolu\w*|diferans|diff[eé]rence)\b",
+    re.IGNORECASE,
+)
+_CURRENT_GANG_CONTROL_RE = re.compile(
+    r"\bgangs?\b.*\b(?:pran\s+)?(?:kontw[oò]l|control\w*|contr[oô]l\w*)\b.*"
+    r"\b(?:p[oò]toprens|port[- ]au[- ]prince)\b",
+    re.IGNORECASE,
+)
+_POST_ARCHIVE_EARTHQUAKE_BASELINE_RE = re.compile(
+    r"\b(?:anvan|avant|before)\b.*\b(?:tranblemannt[eè]|tremblement de terre|"
+    r"s[eé]isme|earthquake)\b|"
+    r"\b(?:tranblemannt[eè]|tremblement de terre|s[eé]isme|earthquake)\b.*"
+    r"\b(?:anvan|avant|before)\b",
+    re.IGNORECASE,
+)
+
 
 def _drop_archive_for_post_archive_years(query: str, classifications: list) -> list:
-    """Remove `pinecone_search` when a query is explicitly about post-2002 years only.
+    """Remove archive searches for clearly out-of-coverage, current-only questions.
 
     The archive cannot answer such questions, and searching it anyway returns
     unrelated earlier-decade material that measurably degrades the answer —
@@ -403,20 +431,26 @@ def _drop_archive_for_post_archive_years(query: str, classifications: list) -> l
     queries whose routing never changed. A deterministic post-step cannot
     interfere with the prompt at all.
 
-    Deliberately narrow: it fires only when the query names explicit years and
-    ALL of them are after the archive's coverage. Vague present-tense queries
-    ("kounye a", "today") name no year, so they are untouched and may still
-    legitimately draw historical context.
+    Historical dates and explicit requests for historical context take
+    precedence. The one exception is a near-2010 earthquake baseline, which
+    the archive ending in 2002 cannot document adequately.
     """
     years = [int(y) for y in _YEAR_RE.findall(query)]
-    if not years or any(y <= _ARCHIVE_LAST_YEAR for y in years):
+    if years and any(y <= _ARCHIVE_LAST_YEAR for y in years):
         return classifications
 
-    # A before/after question about a post-2002 event still wants the archive
-    # for the "before" half — "life now vs before the 2010 earthquake" is
-    # partly answerable from pre-2002 material even though 2010 is the only
-    # year named. Keep the archive whenever such a marker is present.
-    if _COMPARISON_RE.search(query):
+    near_earthquake_baseline = bool(
+        years and 2010 in years
+        and _POST_ARCHIVE_EARTHQUAKE_BASELINE_RE.search(query)
+    )
+    if years:
+        should_drop = near_earthquake_baseline or not _COMPARISON_RE.search(query)
+    else:
+        should_drop = (
+            bool(_CURRENT_INTENT_RE.search(query) or _CURRENT_GANG_CONTROL_RE.search(query))
+            and not _HISTORICAL_INTENT_RE.search(query)
+        )
+    if not should_drop:
         return classifications
 
     filtered = [c for c in classifications if c["source"] != "pinecone_search"]
@@ -424,10 +458,7 @@ def _drop_archive_for_post_archive_years(query: str, classifications: list) -> l
         # Never strip the only source — a degraded archive answer beats none.
         return classifications
     if len(filtered) != len(classifications):
-        logger.info(
-            "Query cites only post-%d years %s; skipping archive search",
-            _ARCHIVE_LAST_YEAR, sorted(set(years)),
-        )
+        logger.info("Question is outside archive scope; skipping archive search")
     return filtered
 
 

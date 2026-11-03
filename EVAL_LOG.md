@@ -1393,3 +1393,199 @@ An isolated, credential-free DeepEval `evaluate()` smoke test also accepted the
 new exact-source metric and passed a reversed-order source pair.
 No raw execution trace is persisted by this change; live DeepEval retains its
 existing local cache behavior.
+
+---
+
+## Round 30 — First Live Run with Repaired Measurements (2026-10-17)
+
+The completed run is saved locally in `eval_run_20261017_075140.log`; that raw log contains answers and retrieved passages and is not committed. It used 17 single-turn queries, seven conversations, and Claude Sonnet 5.5 as judge. DeepEval reported token cost
+`None`, which means the cost was not measured, not that the run was free.
+
+| Cohort | Metric | Pass rate |
+|---|---|---:|
+| Archive-backed answers (14) | Answer Relevancy | 13/14 |
+| | Faithfulness against archive evidence | 14/14 |
+| | Exact Source Selection | **8/14** |
+| | Source Attribution | 13/14 |
+| | Language Consistency | **10/14** |
+| | All answer metrics | 3/14 |
+| Web-only answers (3) | All applicable metrics | 3/3 |
+| Archive retrieval cases (14) | Contextual Relevancy against routed subquery | **8/14** |
+| Conversations (7) | Conversation Completeness | 6/7 |
+| | Referential Coherence | 7/7 |
+
+Across all 17 answers, exact source selection passed 11/17. All six failures
+were unnecessary *extra* searches: four web-only questions also searched the
+archive, while the restavek definition and Duvalier dictatorship questions
+also searched the web. All four language-consistency failures were Haitian
+Creole questions. One occupation answer was entirely in French; the other
+three had substantial untranslated French/English passages inside otherwise
+Creole answers. Retrieval failures still affect English, French, and Creole
+queries, so poor archive relevance is not a Creole-only problem.
+
+This is the baseline for the repaired metrics, not a like-for-like numerical
+comparison with Round 28. Archive Faithfulness does not verify web-derived
+claims in mixed answers. No production change was made for this run.
+
+---
+
+## Round 31 — Explicit Answer Language with Original Landing UI (2026-10-19)
+
+The landing page keeps its original English default and two-option HT/FR
+switcher. Selecting HT or FR stores an explicit answer-language preference
+for the browser session; choosing EN again clears the override. Without an
+override, the shared query runner detects each question's language, uses the
+previous user question for ambiguous short follow-ups, and falls back to
+English. Synthesis receives the explicit language name and guidance to
+paraphrase foreign-language source passages or label brief translated
+quotations while preserving citations. The existing Creole-to-French
+*archive-search* behavior is unchanged.
+
+The offline tests exercise selector propagation, automatic detection, follow-
+up fallback, synthesis prompt construction, and streaming. No live paid eval
+has been run after this product change; language-quality gains and possible
+side effects remain to be measured.
+
+---
+
+## Round 32 — Live Eval After Answer-Language Change (2026-10-19)
+
+The paid suite completed all four batches: 17 single-turn answers, 14 archive
+retrieval cases, and seven conversations. The full raw output is in the ignored
+local file `eval_run_20261019_192130_live.log`; it contains answers and
+retrieved passages and is not committed. The judge remained Claude Sonnet 5.5
+with the repaired Round 29 metrics. DeepEval reported token cost `None`, so
+actual provider cost was not measured.
+
+| Metric | Round 30 | Round 32 |
+|---|---:|---:|
+| Archive-backed Answer Relevancy | 13/14 | 14/14 |
+| Archive-backed Faithfulness | 14/14 | 14/14 |
+| Archive-backed Exact Source Selection | 8/14 | 8/14 |
+| Archive-backed Source Attribution | 13/14 | 14/14 |
+| Archive-backed Language Consistency | **10/14** | **13/14** |
+| Archive-backed all answer metrics | 3/14 | 8/14 |
+| Web-only all applicable metrics | 3/3 | 3/3 |
+| Archive Contextual Relevancy | 8/14 | 8/14 |
+| Conversation Completeness | 6/7 | 6/7 |
+| Referential Coherence | 7/7 | 7/7 |
+
+Across all 17 single-turn answers, Language Consistency improved from 13/17
+to 16/17. The remaining failure was `eval-ht-slang-current`: the answer's
+main body was Haitian Creole, but it retained several long, untranslated
+French Radio Haïti quotations. The earlier fully French answer to the Creole
+occupation question did not recur. This supports the answer-language prompt
+change but does not prove a stable three-case gain from one stochastic live
+run; source content and judge outputs vary between runs.
+
+The same six source-selection cases still failed, each due to an extra source
+call. Retrieval relevance remained 8/14, and the coffee-production conversation
+again failed completeness because the answer lacked grounded Haitian 1940s
+figures. These are separate problems that the language change did not target.
+This live suite calls `run_query` without a UI language override, so it tests
+automatic detection and synthesis only. Explicit HT/FR selection and session
+persistence are covered by offline tests, not by a paid UI scenario.
+
+---
+
+## Round 33 — Routing and Candidate-Stage Diagnostic (2026-10-19)
+
+This is a code change and targeted retrieval diagnostic, **not** a new full
+DeepEval baseline. The classifier's description of the archive no longer says
+Le Nouvelliste runs to the present; it now names the indexed coverage (Le
+Nouvelliste through 1979, Radio Haïti through 2002). A narrow post-classifier
+guard removes archive searches from clearly current-only questions without
+historical intent, including the three vague-current failures in Round 32.
+For the fourth, comparing today with immediately before the 2010 earthquake,
+the guard treats that near-2010 baseline as outside this archive's coverage.
+It still preserves archive searches for genuine historical comparisons and
+keeps the existing archive-only fallback if no other source was selected.
+Four router-only live calls (no retrieval or synthesis) returned `web_search`
+alone for the French current-economy question, the Creole slang-current
+question, the Creole gang-control question, and the pre-2010 comparison.
+This confirms the targeted behavior once, but is not a repeated stability or
+answer-quality evaluation.
+
+The user chose to allow web supplementation when needed for broad historical
+questions. Consequently, the restavek-definition and Duvalier-overview cases
+still **require** archive search but now **allow** one optional web search in
+the source-selection metric. Other cases retain strict source expectations.
+The metric is now called `Source Selection`; its future pass rate is **not
+directly comparable** with the old `Exact Source Selection` rate because the
+gold policy changed for two cases. This is a measurement-policy correction,
+not evidence that the production router improved on those cases.
+
+A targeted live diagnostic made three archive searches using the production
+embedding, Pinecone query, quality filter, and reranker; it did not invoke
+Anthropic, DeepEval, or synthesis, and wrote no trace artifacts:
+
+| Routed archive subquery | Initial | After quality | Final | Finding |
+| --- | ---: | ---: | ---: | --- |
+| 1940s Haitian agriculture | 14 | 14 | 5 | Initial candidates were already dominated by off-topic/OCR-damaged Le Nouvelliste chunks; this is primarily a candidate-generation/coverage problem. |
+| Haitian coffee since the early 1900s | 14 | 14 | 6 | Several useful coffee passages survived reranking, but irrelevant/OCR-damaged chunks remained in final context. |
+| Duvalier dictatorship | 14 | 14 | 6 | Final context included overlapping Radio Haïti passages and tangential Trujillo/political material. |
+
+These are one-shot observations, not stable score estimates. None of the three
+client-side quality-filter passes removed a candidate, so tightening the
+filter blindly is not justified. The next retrieval experiments should compare
+date-aware or lexical candidate generation for 1940s agriculture, and
+deduplication/passage focus for coffee and Duvalier, against fixed case-level
+evidence. Run a full paid evaluation only after those changes are chosen; the
+Round 32 scores remain the latest live baseline.
+
+---
+
+## Round 34 — Full Live Eval After Routing Correction (2026-10-19)
+
+The paid `python eval.py` suite completed successfully: 17 single-turn cases,
+10 archive retrieval cases, and seven conversations. No separate raw stdout
+log was created. DeepEval writes its own ignored local `.deepeval` cache and
+latest-run JSON; those contain answers and retrieved text and must not be
+committed. The judge was Claude Sonnet 5.5. DeepEval again reported token cost
+`None`, meaning cost was unmeasured, not zero.
+
+| Metric | Round 32 | Round 34 |
+| --- | ---: | ---: |
+| Archive-backed Answer Relevancy | 14/14 | **10/10** |
+| Archive-backed Faithfulness | 14/14 | **10/10** |
+| Source Selection, all 17 answers | 11/17 under old exact policy | **17/17 under revised policy** |
+| Archive-backed Source Attribution | 14/14 | **9/10** |
+| Language Consistency, all 17 answers | 16/17 | **17/17** |
+| Archive-backed all answer metrics | 8/14 | **9/10** |
+| Web-only all applicable answer metrics | 3/3 | **7/7** |
+| Archive Contextual Relevancy | 8/14 | **3/10** |
+| Conversation Completeness | 6/7 | **7/7** |
+| Referential Coherence | 7/7 | **7/7** |
+
+All four formerly misrouted current-only questions ran web-only, while the
+genuine current-versus-historical comparisons retained both sources. The two
+broad historical questions still had archive evidence and may include optional
+web supplementation under the user-approved source policy. Thus the source
+selection gain combines a real four-case routing correction with a two-case
+metric-policy change; it is **not** a like-for-like 11/17-to-17/17 comparison.
+
+Archive relevance fell numerically to 3/10. The denominator changed because
+four inappropriate archive searches disappeared; three of those had passed
+the old routed-subquery relevance check, so removing them alone would have
+changed 8/14 to 5/10 without any retrieval regression. Among the ten
+remaining archive cases, the 1937 Parsley Massacre, historical Port-au-Prince,
+and political comparison under Duvalier passed. The other seven failed,
+including 1940s agriculture (0.31), restavek (0.46), generic Duvalier (0.45),
+coffee history (0.62), Dessalines (0.65), and the two occupation queries (0.46
+and 0.67). Restavek and one occupation query had passed in Round 32, showing
+case-level retrieval variance on top of the denominator shift.
+
+The sole Source Attribution failure was the 1940s agriculture answer. The
+judge identified uncited claims and an implausible chronology: it cited a
+1938-dated Le Nouvelliste chunk for a claim about a 1947 UNESCO appeal. This
+deserves source/date verification, not just citation-format adjustment.
+
+Conversation Completeness passed all seven cases, but the coffee conversation
+is **not actually resolved**. Its 1940s reply still uses world and Brazil
+production figures in place of Haitian figures and cites a 1930-dated archive
+chunk for a 1947–48 estimate. The coherence judge itself noted thin
+Haiti-specific 1940s evidence and oddly dated citations, despite passing.
+Completeness measures whether the response addresses the requested comparison,
+not whether the supporting historical figures are sound. Archive Faithfulness
+does not verify web-derived claims, and web-only cases still have no
+evidence-grounding metric.

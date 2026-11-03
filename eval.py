@@ -9,7 +9,7 @@ RAG quality
   - ContextualRelevancyMetric   : Are archive chunks relevant to the routed archive subquery?
 
 Agentic routing
-  - Exact Source Selection      : Were exactly the expected sources selected?
+  - Source Selection            : Were required sources used without disallowed extras?
 
 Custom (G-Eval)
   - Source Attribution          : Does the response cite Le Nouvelliste dates / URLs?
@@ -116,14 +116,15 @@ class AnthropicClaudeJudge(DeepEvalBaseLLM):
 
 
 class ExactSourceSelectionMetric(BaseMetric):
-    """Compare selected sources without treating their execution order as a failure."""
+    """Check required sources, allowing case-specific optional supplementation."""
 
     _required_params = [
         LLMTestCaseParams.TOOLS_CALLED,
         LLMTestCaseParams.EXPECTED_TOOLS,
     ]
 
-    def __init__(self) -> None:
+    def __init__(self, optional_sources_by_case: dict[str, tuple[str, ...]] | None = None) -> None:
+        self.optional_sources_by_case = optional_sources_by_case or {}
         self.threshold = 1.0
         self.async_mode = True
         self.include_reason = True
@@ -134,10 +135,16 @@ class ExactSourceSelectionMetric(BaseMetric):
     def measure(self, test_case: LLMTestCase, *args, **kwargs) -> float:
         called = Counter(tool.name for tool in test_case.tools_called or [])
         expected = Counter(tool.name for tool in test_case.expected_tools or [])
-        self.score = float(called == expected)
+        optional = Counter(self.optional_sources_by_case.get(test_case.name or "", ()))
+        allowed = expected + optional
+        self.score = float(all(
+            expected[source] <= called[source] <= allowed[source]
+            for source in called.keys() | allowed.keys()
+        ))
         self.success = self.score == 1.0
         self.reason = (
             f"Expected {sorted(expected.elements())}; "
+            f"optional {sorted(optional.elements())}; "
             f"called {sorted(called.elements())}."
         )
         return self.score
@@ -150,7 +157,7 @@ class ExactSourceSelectionMetric(BaseMetric):
 
     @property
     def __name__(self) -> str:
-        return "Exact Source Selection"
+        return "Source Selection"
 
 
 @dataclass(frozen=True)
@@ -355,6 +362,13 @@ TEST_QUERIES: list[tuple[str, list[str], str]] = [
     ),
 ]
 
+# These broad historical questions may benefit from explanatory web context,
+# but must still search Pearl's archive. Optional does not mean web is required.
+OPTIONAL_WEB_SOURCE_CASES = frozenset({
+    "eval-ht-definitional",
+    "eval-ht-openended-duvalier",
+})
+
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
@@ -369,7 +383,9 @@ def build_single_turn_metrics(judge: DeepEvalBaseLLM):
     contextual_relevancy = ContextualRelevancyMetric(
         threshold=0.7, model=judge, include_reason=True
     )
-    exact_source_selection = ExactSourceSelectionMetric()
+    exact_source_selection = ExactSourceSelectionMetric({
+        case_id: ("web_search",) for case_id in OPTIONAL_WEB_SOURCE_CASES
+    })
     source_attribution = GEval(
         name="Source Attribution",
         criteria=(

@@ -7,6 +7,7 @@ the scripts did not move or discard those local files.
 
 | Command | Purpose |
 | --- | --- |
+| `python -m experiments.diagnose_retrieval --query 'archive subquery'` | Paid, read-only candidate-stage check (Cohere/Pinecone); prints short previews and writes no trace file. |
 | `python -m experiments.preproc_quality_filter_calibration` | Rebuild the quality-filter calibration report. |
 | `python -m experiments.quality_distill_label --dry-run` | Prepare and estimate the paid labeling batch. |
 | `python -m experiments.quality_distill_label --submit` | Submit the paid labeling batch. |
